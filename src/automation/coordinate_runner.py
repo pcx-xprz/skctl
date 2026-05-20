@@ -139,35 +139,94 @@ class CoordinateRunner:
     def execute_waypoint(self, waypoint: Waypoint, game_controller=None) -> bool:
         """
         Eksekusi satu waypoint.
-        game_controller bisa None (coordinate-only mode / WSL).
+        game_controller bisa None (coordinate-only / WSL / API mode).
+
+        Actions:
+          move, collect, fly, interact, wait  – game input
+          burn   – bakar dark plant (candle ke darkness)
+          plant  – tanam/light candle di altar
+          absorb – absorb wax dari candles/plants
+          forge  – forge wax → candles via API
+          api_cr – collect candle via Sky API langsung (tanpa game!)
         """
         desc = waypoint.description or waypoint.action
-        logger.debug(f"Waypoint [{waypoint.action}] ({waypoint.x},{waypoint.y}) – {desc}")
+        logger.debug(f"[{waypoint.action}] ({waypoint.x},{waypoint.y}) – {desc}")
 
-        if game_controller is not None:
-            # Mode dengan game controller (butuh display)
-            try:
-                if waypoint.action == "move":
-                    game_controller.move_to_position(waypoint.x, waypoint.y, waypoint.duration)
-                elif waypoint.action == "collect":
-                    game_controller.move_to_position(waypoint.x, waypoint.y, waypoint.duration)
-                    time.sleep(0.3)
-                    game_controller.interact()
-                elif waypoint.action == "fly":
-                    game_controller.fly_towards(waypoint.x, waypoint.y, waypoint.duration)
-                elif waypoint.action == "interact":
-                    game_controller.interact()
-                elif waypoint.action == "wait":
-                    time.sleep(waypoint.duration)
-            except Exception as e:
-                logger.warning(f"Controller error (continuing anyway): {e}")
-        else:
-            # Coordinate-only mode – simulasikan dengan sleep
-            time.sleep(min(waypoint.duration * 0.1, 0.3))
+        action = waypoint.action
 
-        # Hitung candle
-        if waypoint.action == "collect":
-            self.candles_collected += 1
+        # ── API-only actions (tidak butuh game) ──────────────────────────────
+        if action == "api_cr":
+            # Handled oleh caller (telegram_bot) via SkyAPIClient
+            logger.info(f"API CR waypoint: {desc}")
+            time.sleep(0.1)
+            return True
+
+        if action == "forge":
+            # Handled oleh caller via SkyAPIClient.forge_wax()
+            logger.info(f"Forge wax waypoint: {desc}")
+            time.sleep(0.1)
+            return True
+
+        # ── Coordinate-only simulation (no game needed) ───────────────────────
+        if game_controller is None:
+            # Simulasi timing tanpa game
+            sleep_time = min(waypoint.duration * 0.05, 0.2)
+            time.sleep(sleep_time)
+            if action in ("collect", "burn", "plant", "absorb"):
+                self.candles_collected += 1
+            return True
+
+        # ── Real game controller ──────────────────────────────────────────────
+        try:
+            if action == "move":
+                game_controller.move_to_position(waypoint.x, waypoint.y, waypoint.duration)
+
+            elif action == "collect":
+                game_controller.move_to_position(waypoint.x, waypoint.y, waypoint.duration)
+                time.sleep(0.3)
+                game_controller.interact()
+                self.candles_collected += 1
+
+            elif action == "burn":
+                # Burn dark plant: navigate + hold candle toward darkness
+                game_controller.move_to_position(waypoint.x, waypoint.y, waypoint.duration)
+                time.sleep(0.5)
+                game_controller.interact()   # Hold candle up
+                time.sleep(waypoint.duration * 0.5)  # Burn duration
+                game_controller.interact()   # Release
+                self.candles_collected += 1
+                logger.info(f"Burned dark plant at ({waypoint.x},{waypoint.y})")
+
+            elif action == "plant":
+                # Plant/light candle: navigate ke altar + interact
+                game_controller.move_to_position(waypoint.x, waypoint.y, waypoint.duration)
+                time.sleep(0.3)
+                game_controller.interact()
+                time.sleep(1.0)  # Wait for plant animation
+                self.candles_collected += 1
+                logger.info(f"Planted candle at ({waypoint.x},{waypoint.y})")
+
+            elif action == "absorb":
+                # Absorb wax: stand near candles/plants
+                game_controller.move_to_position(waypoint.x, waypoint.y, waypoint.duration)
+                time.sleep(waypoint.duration)  # Stand still to absorb
+                self.candles_collected += 1
+                logger.info(f"Absorbing wax at ({waypoint.x},{waypoint.y})")
+
+            elif action == "fly":
+                game_controller.fly_towards(waypoint.x, waypoint.y, waypoint.duration)
+
+            elif action == "interact":
+                game_controller.interact()
+
+            elif action == "wait":
+                time.sleep(waypoint.duration)
+
+            else:
+                logger.warning(f"Unknown action: {action}")
+
+        except Exception as e:
+            logger.warning(f"Controller error (continuing): {e}")
 
         return True
 
