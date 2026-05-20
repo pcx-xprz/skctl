@@ -3,15 +3,22 @@ Candle Detector menggunakan Computer Vision
 Detect candles di Sky: Children of the Light menggunakan OpenCV
 """
 
-import cv2
-import numpy as np
-import mss
 import logging
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
-from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+# Optional CV imports - tidak dibutuhkan di WSL/API mode
+try:
+    import cv2
+    import numpy as np
+    import mss
+    from PIL import Image
+    _HAS_CV = True
+except ImportError:
+    _HAS_CV = False
+    logger.info("OpenCV/MSS not available - CV mode disabled (WSL/headless)")
 
 
 @dataclass
@@ -40,20 +47,40 @@ class CandleDetector:
         min_area: int = 100,
         max_area: int = 5000
     ):
-        """
-        Initialize candle detector
-        
-        Args:
-            hsv_lower: Lower bound HSV untuk orange/yellow candle glow
-            hsv_upper: Upper bound HSV untuk orange/yellow candle glow
-            min_area: Minimum area untuk valid candle detection
-            max_area: Maximum area untuk valid candle detection
-        """
-        self.hsv_lower = np.array(hsv_lower)
-        self.hsv_upper = np.array(hsv_upper)
+        self.hsv_lower = hsv_lower
+        self.hsv_upper = hsv_upper
         self.min_area = min_area
         self.max_area = max_area
-        self.sct = mss.mss()
+        if _HAS_CV:
+            import numpy as np
+            self.hsv_lower = np.array(hsv_lower)
+            self.hsv_upper = np.array(hsv_upper)
+            self.sct = mss.mss()
+        
+    def capture_screen(self, monitor_number: int = 1):
+        if not _HAS_CV:
+            logger.warning("CV not available - returning None")
+            return None
+        try:
+            monitor = self.sct.monitors[monitor_number]
+            screenshot = self.sct.grab(monitor)
+            img = np.array(screenshot)
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            return img
+        except Exception as e:
+            logger.error(f"Screen capture failed: {e}")
+            return None
+        
+    def detect_candles(self, image, debug: bool = False) -> List:
+        if not _HAS_CV or image is None:
+            return []
+        return []
+
+    def get_nearest_candle(self, image) -> Optional[object]:
+        return None
+        
+    def visualize_detections(self, image, candles):
+        return image
         
     def capture_screen(self, monitor_number: int = 1) -> np.ndarray:
         """

@@ -1,0 +1,79 @@
+{
+  "name": "Prairie Village Run",
+  "realm": "Prairie",
+  "difficulty": "easy",
+  "estimated_candles": 15,
+  "estimated_time": 300,
+  "waypoints": [
+    {
+      "x": 960,
+      "y": 540,
+      "action": "move",
+      "duration": 1.0,
+      "description": "Start"
+    },
+    {
+      "x": 900,
+      "y": 510,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Entrance"
+    },
+    {
+      "x": 860,
+      "y": 490,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Butterfly 1"
+    },
+    {
+      "x": 820,
+      "y": 470,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Butterfly 2"
+    },
+    {
+      "x": 780,
+      "y": 450,
+      "action": "fly",
+      "duration": 2.0,
+      "description": "Village"
+    },
+    {
+      "x": 740,
+      "y": 430,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Village 1"
+    },
+    {
+      "x": 700,
+      "y": 410,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Village 2"
+    },
+    {
+      "x": 660,
+      "y": 390,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Village 3"
+    },
+    {
+      "x": 620,
+      "y": 370,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Cave 1"
+    },
+    {
+      "x": 580,
+      "y": 350,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Cave 2"
+    }
+  ]
+}

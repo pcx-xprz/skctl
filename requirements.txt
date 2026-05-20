@@ -1,15 +1,22 @@
+# Core bot
 python-telegram-bot==20.7
-playwright==1.40.0
+requests==2.31.0
+pyjwt==2.8.0
+python-dotenv==1.0.0
+aiohttp==3.9.1
+nest-asyncio==1.5.8
+
+# UI automation (butuh display/game)
+pyautogui==0.9.54
+pynput==1.7.6
+
+# Computer vision (butuh display/game)
 opencv-python==4.8.1.78
 pillow==10.1.0
 numpy==1.26.2
-pyautogui==0.9.54
-pynput==1.7.6
-requests==2.31.0
-pyjwt==2.8.0
-cryptography==41.0.7
-python-dotenv==1.0.0
-aiohttp==3.9.1
 mss==9.0.1
+
+# Optional
+playwright==1.40.0
+cryptography==41.0.7
 scikit-image==0.22.0
-nest-asyncio==1.5.8

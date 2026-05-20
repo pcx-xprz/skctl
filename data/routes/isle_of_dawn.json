@@ -1,0 +1,65 @@
+{
+  "name": "Isle of Dawn",
+  "realm": "Isle",
+  "difficulty": "easy",
+  "estimated_candles": 8,
+  "estimated_time": 180,
+  "waypoints": [
+    {
+      "x": 960,
+      "y": 540,
+      "action": "move",
+      "duration": 1.0,
+      "description": "Start"
+    },
+    {
+      "x": 920,
+      "y": 520,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Beach 1"
+    },
+    {
+      "x": 880,
+      "y": 500,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Beach 2"
+    },
+    {
+      "x": 840,
+      "y": 480,
+      "action": "fly",
+      "duration": 2.0,
+      "description": "Fly to temple"
+    },
+    {
+      "x": 800,
+      "y": 460,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Temple 1"
+    },
+    {
+      "x": 760,
+      "y": 440,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "Temple 2"
+    },
+    {
+      "x": 720,
+      "y": 420,
+      "action": "collect",
+      "duration": 1.0,
+      "description": "High candle"
+    },
+    {
+      "x": 960,
+      "y": 540,
+      "action": "wait",
+      "duration": 1.0,
+      "description": "Done"
+    }
+  ]
+}

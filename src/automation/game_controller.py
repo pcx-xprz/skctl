@@ -3,14 +3,30 @@ Game Controller untuk Sky: Children of the Light
 Handle input automation (keyboard, mouse) untuk auto CR
 """
 
-import pyautogui
 import time
 import logging
-import numpy as np
 from typing import Tuple, Optional, List
 from enum import Enum
-from pynput.keyboard import Controller as KeyboardController, Key
-from pynput.mouse import Controller as MouseController, Button
+
+# Optional imports - tidak dibutuhkan di WSL/API mode
+try:
+    import pyautogui
+    import numpy as np
+    from pynput.keyboard import Controller as KeyboardController, Key
+    from pynput.mouse import Controller as MouseController, Button
+    _HAS_GUI = True
+except ImportError:
+    _HAS_GUI = False
+    # Dummy classes agar tidak crash
+    class KeyboardController:
+        def press(self, k): pass
+        def release(self, k): pass
+    class MouseController:
+        def move(self, x, y): pass
+    class Key:
+        space = 'space'
+        shift = 'shift'
+        esc = 'esc'
 
 logger = logging.getLogger(__name__)
 
@@ -31,20 +47,21 @@ class GameController:
     def __init__(self):
         self.keyboard = KeyboardController()
         self.mouse = MouseController()
-        
-        # Safety settings
-        pyautogui.PAUSE = 0.1
-        pyautogui.FAILSAFE = True  # Move mouse to corner to abort
-        
-        # Movement settings
-        self.movement_duration = 0.5  # Default movement duration
-        self.turn_sensitivity = 10  # Pixels per degree
-        
-        # Screen center
-        screen_size = pyautogui.size()
-        self.screen_center = (screen_size.width // 2, screen_size.height // 2)
-        
-        logger.info(f"GameController initialized. Screen: {screen_size}")
+
+        # Safety settings - only if pyautogui available
+        if _HAS_GUI:
+            try:
+                pyautogui.PAUSE = 0.1
+                pyautogui.FAILSAFE = True
+                screen_size = pyautogui.size()
+                self.screen_center = (screen_size.width // 2, screen_size.height // 2)
+                logger.info(f"GameController initialized. Screen: {screen_size}")
+            except Exception as e:
+                logger.warning(f"GameController display init failed (WSL?): {e}")
+                self.screen_center = (960, 540)
+        else:
+            logger.info("GameController: headless mode (no display)")
+            self.screen_center = (960, 540)
         
     def move_to_position(self, x: int, y: int, duration: float = 0.5):
         """
