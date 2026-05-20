@@ -61,26 +61,48 @@ class SkySessionExtractor:
             "Host": API_HOST,
         })
 
-    def extract_from_jwt(self, jwt_token: str) -> Optional[Dict]:
+    def extract_from_jwt(self, jwt_token: str, sky_id: Optional[str] = None) -> Optional[Dict]:
         """
         JWT Facebook → POST create_session → {user_id, session}
 
+        sky_id: Sky UUID dari JSON OAuth response (opsional, memperkuat request)
         Returns dict atau None.
         """
         jwt_info = self._decode_jwt(jwt_token)
-        logger.info(f"JWT: name={jwt_info.get('name','?')}")
+        logger.info(f"JWT: name={jwt_info.get('name','?')}, sub={jwt_info.get('sub','?')}")
 
-        # Daftar endpoint yang dicoba (dari reverse-engineering)
+        # Gunakan sky_id dari JSON OAuth jika tersedia, fallback ke sub dari JWT
+        fb_id = sky_id or jwt_info.get("sub", "")
+
+        # Daftar endpoint yang dicoba (dari reverse-engineering AutoWax4C + analisis FengWu)
+        # FengWu mendapat UUID langsung dari Sky OAuth page → kemungkinan besar flow-nya:
+        # Sky OAuth → return { id (Sky UUID), alias, token (FB JWT) }
+        # Lalu token + sky UUID dikirim ke create_session
         attempts = [
+            # Cara paling mirip FengWu: kirim token + sky id
+            ("/account/create_session", {
+                "type": "facebook",
+                "token": jwt_token,
+                "id": fb_id,
+                "game_version": 280,
+            }),
+            # AutoWax4C style: hanya token + game_version
             ("/account/create_session", {
                 "type": "facebook",
                 "token": jwt_token,
                 "game_version": 280,
             }),
+            # Variasi tanpa game_version
+            ("/account/create_session", {
+                "type": "facebook",
+                "token": jwt_token,
+            }),
+            # Dengan access_token key
             ("/account/create_session", {
                 "type": "facebook",
                 "access_token": jwt_token,
             }),
+            # Endpoint signin alternatif
             ("/account/signin", {
                 "auth_token": jwt_token,
                 "auth_type": "facebook",
@@ -91,7 +113,7 @@ class SkySessionExtractor:
             result = self._try_endpoint(endpoint, payload)
             if result:
                 result["name"] = jwt_info.get("name", "Unknown")
-                result["facebook_id"] = jwt_info.get("sub", "")
+                result["facebook_id"] = fb_id
                 logger.info(f"Session created via {endpoint}!")
                 return result
 
@@ -177,9 +199,10 @@ class SessionManager:
         except Exception as e:
             logger.error(f"Save sessions: {e}")
 
-    def get_or_create(self, tg_uid: str, jwt_token: str) -> Optional[Tuple[str, str]]:
+    def get_or_create(self, tg_uid: str, jwt_token: str, sky_id: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """
         Get session yang ada, atau buat baru dari JWT.
+        sky_id: Sky UUID dari JSON OAuth (opsional, meningkatkan peluang berhasil).
         Returns (user_id, session) atau None.
         """
         existing = self.sessions.get(tg_uid)
@@ -191,7 +214,7 @@ class SessionManager:
                 logger.info("Session expired, refreshing...")
 
         # Buat baru
-        data = self.extractor.extract_from_jwt(jwt_token)
+        data = self.extractor.extract_from_jwt(jwt_token, sky_id=sky_id)
         if not data:
             return None
 
