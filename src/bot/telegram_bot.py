@@ -731,9 +731,13 @@ class SkyAutoBot:
                     self.user_sessions[uid]['state'] = 'logged_in'
 
                     # Auto-coba extract session langsung setelah login
-                    await u.message.reply_text("⏳ Mencoba extract session dari Sky server...")
-                    # Pass sky_id jika tersedia dari JSON OAuth (meningkatkan peluang sukses)
                     sky_id_from_json = self.user_sessions[uid].get('sky_id')
+                    await u.message.reply_text(
+                        f"⏳ <b>Mencoba extract session...</b>\n\n"
+                        f"🤖 Mengirim device fingerprint Android ke Sky server\n"
+                        f"🔄 Mencoba 7 kombinasi payload...",
+                        parse_mode='HTML'
+                    )
                     result = self.session_mgr.get_or_create(str(uid), jwt_token, sky_id=sky_id_from_json)
                     if result:
                         sky_uid, session_id = result
@@ -747,17 +751,17 @@ class SkyAutoBot:
                         )
                     else:
                         await u.message.reply_text(
-                            f"⚠️ <b>Token valid, tapi session belum bisa di-extract otomatis.</b>\n\n"
+                            f"⚠️ <b>Semua attempt gagal — server masih reject.</b>\n\n"
                             f"👤 Name: <b>{td.get('name', 'Unknown')}</b>\n\n"
-                            f"Kemungkinan sebab:\n"
-                            f"• Server Sky butuh device fingerprint dari game client asli\n"
-                            f"• Endpoint create_session memerlukan parameter tambahan\n\n"
-                            f"<b>Solusi manual:</b>\n"
-                            f"1. Buka game Sky di HP\n"
-                            f"2. Intercept traffic dengan HTTP Toolkit atau mitmproxy\n"
-                            f"3. Cari request ke <code>live.radiance.thatgamecompany.com</code>\n"
-                            f"4. Copy header <code>session</code> dan <code>user-id</code>\n"
-                            f"5. Kirim: <code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>",
+                            f"Server Sky kemungkinan memverifikasi device yang sudah pernah\n"
+                            f"login sebelumnya (registered device check).\n\n"
+                            f"<b>✅ Solusi paling pasti (5 menit):</b>\n"
+                            f"1. Install <b>HTTP Toolkit</b> di PC: httptoolkit.com\n"
+                            f"2. Scan QR dari HP Android kamu\n"
+                            f"3. Buka game Sky → login sampai masuk\n"
+                            f"4. Di HTTP Toolkit filter: <code>live.radiance.thatgamecompany.com</code>\n"
+                            f"5. Ambil header <code>session</code> dan <code>user-id</code>\n"
+                            f"6. Kirim ke bot: <code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>",
                             parse_mode='HTML'
                         )
                 else:
