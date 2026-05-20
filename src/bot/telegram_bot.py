@@ -25,6 +25,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from auth.oauth_handler import SkyOAuthHandler, TokenManager
 from cv.candle_detector import CandleDetector
 from automation.game_controller import GameController, AutoCRController
+from automation.coordinate_runner import CoordinateRunner, setup_sample_routes
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class SkyAutoBot:
         self.token_manager = TokenManager()
         self.candle_detector = CandleDetector()
         self.game_controller = GameController()
+        self.coordinate_runner = setup_sample_routes()  # NEW: Coordinate-based runner
         
         # User sessions
         self.user_sessions: Dict[int, dict] = {}
@@ -58,6 +60,8 @@ class SkyAutoBot:
         self.app.add_handler(CommandHandler("login", self.cmd_login))
         self.app.add_handler(CommandHandler("status", self.cmd_status))
         self.app.add_handler(CommandHandler("autocr", self.cmd_autocr))
+        self.app.add_handler(CommandHandler("routes", self.cmd_routes))  # NEW
+        self.app.add_handler(CommandHandler("run", self.cmd_run_route))  # NEW
         self.app.add_handler(CommandHandler("stop", self.cmd_stop))
         self.app.add_handler(CommandHandler("stats", self.cmd_stats))
         self.app.add_handler(CommandHandler("screenshot", self.cmd_screenshot))
@@ -534,3 +538,150 @@ if __name__ == "__main__":
     )
     
     asyncio.run(main())
+
+
+    async def cmd_routes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /routes command - List available routes"""
+        routes = self.coordinate_runner.list_routes()
+        
+        if not routes:
+            await update.message.reply_text(
+                "❌ No routes available yet!",
+                parse_mode='HTML'
+            )
+            return
+            
+        message = "<b>📍 Available Candle Run Routes:</b>\n\n"
+        
+        for i, route_name in enumerate(routes, 1):
+            route = self.coordinate_runner.get_route(route_name)
+            message += f"<b>{i}. {route.name}</b>\n"
+            message += f"   🗺️ Realm: {route.realm}\n"
+            message += f"   ⭐ Difficulty: {route.difficulty}\n"
+            message += f"   🕯️ Candles: ~{route.estimated_candles}\n"
+            message += f"   ⏱️ Time: ~{route.estimated_time // 60} min\n"
+            message += f"   📍 Waypoints: {len(route.waypoints)}\n"
+            message += f"   <code>/run {route_name}</code>\n\n"
+            
+        message += "💡 <b>Usage:</b> /run [route_name]\n"
+        message += "📖 Example: <code>/run Prairie Village Run</code>"
+        
+        await update.message.reply_text(
+            message,
+            parse_mode='HTML'
+        )
+        
+    async def cmd_run_route(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /run command - Start coordinate-based route"""
+        user_id = update.effective_user.id
+        
+        # Check if logged in
+        token = self.token_manager.get_token(str(user_id))
+        if not token:
+            await update.message.reply_text(
+                "❌ Kamu belum login! Gunakan /login terlebih dahulu.",
+                parse_mode='HTML'
+            )
+            return
+            
+        # Get route name from command
+        if not context.args:
+            await update.message.reply_text(
+                "⚠️ Please specify route name!\n\nUsage: /run [route_name]\n\nUse /routes to see available routes.",
+                parse_mode='HTML'
+            )
+            return
+            
+        route_name = ' '.join(context.args)
+        
+        # Check if route exists
+        if not self.coordinate_runner.get_route(route_name):
+            await update.message.reply_text(
+                f"❌ Route '{route_name}' not found!\n\nUse /routes to see available routes.",
+                parse_mode='HTML'
+            )
+            return
+            
+        # Start route
+        success = self.coordinate_runner.start_route(route_name)
+        
+        if success:
+            route = self.coordinate_runner.get_route(route_name)
+            await update.message.reply_text(
+                f"""
+✅ <b>Starting Route: {route.name}</b>
+
+🗺️ Realm: {route.realm}
+⭐ Difficulty: {route.difficulty}
+🕯️ Expected Candles: {route.estimated_candles}
+⏱️ Estimated Time: {route.estimated_time // 60} minutes
+📍 Total Waypoints: {len(route.waypoints)}
+
+🎮 Bot akan mengikuti pre-recorded path!
+⚠️ <b>TESTING MODE</b> - Coordinates only (no actual game control)
+
+Use /stop to stop the route.
+""",
+                parse_mode='HTML'
+            )
+            
+            # Start route execution loop
+            asyncio.create_task(self._coordinate_route_loop(user_id, update))
+        else:
+            await update.message.reply_text(
+                "❌ Failed to start route!",
+                parse_mode='HTML'
+            )
+            
+    async def _coordinate_route_loop(self, user_id: int, update: Update):
+        """Background loop untuk coordinate-based route"""
+        try:
+            while self.coordinate_runner.is_running:
+                # Execute one step
+                continue_running, status = self.coordinate_runner.run_route_step(
+                    self.game_controller
+                )
+                
+                # Send progress update every 5 waypoints
+                stats = self.coordinate_runner.get_stats()
+                if stats['current_waypoint'] % 5 == 0 and stats['current_waypoint'] > 0:
+                    await update.message.reply_text(
+                        f"""
+📊 <b>Progress Update</b>
+
+📍 Progress: {stats['progress']:.1f}%
+🕯️ Candles: {stats['candles']}/{stats['estimated_candles']}
+📌 Waypoint: {stats['current_waypoint']}/{stats['total_waypoints']}
+""",
+                        parse_mode='HTML'
+                    )
+                
+                if not continue_running:
+                    # Route complete
+                    final_stats = self.coordinate_runner.get_stats()
+                    await update.message.reply_text(
+                        f"""
+🎉 <b>Route Complete!</b>
+
+✅ <b>{final_stats['route_name']}</b>
+
+📊 Final Stats:
+🕯️ Candles Collected: {final_stats['candles']}
+📍 Waypoints Completed: {final_stats['total_waypoints']}
+
+Great job! 🌟
+""",
+                        parse_mode='HTML'
+                    )
+                    break
+                    
+                # Small delay between waypoints
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"Error in coordinate route loop: {e}")
+            await update.message.reply_text(
+                f"❌ Route error: {e}\n\nRoute stopped.",
+                parse_mode='HTML'
+            )
+            self.coordinate_runner.stop_route()
