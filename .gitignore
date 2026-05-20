@@ -44,11 +44,15 @@ env/
 logs/
 *.log
 
-# Data
-data/
+# Data - keep routes but ignore user data
+data/tokens.json
 tokens.json
 *.db
 *.sqlite
+# Allow route JSON files
+!data/
+!data/routes/
+!data/routes/*.json
 
 # Screenshots
 screenshots/
