@@ -45,9 +45,9 @@ class SkyAutoBot:
         self.app = None
         self.oauth = SkyOAuthHandler()
         self.tokens = TokenManager()
-        self.sessions = SessionManager()       # ← NEW: session manager
+        self.session_mgr = SessionManager()    # Sky API session manager
         self.runner = setup_sample_routes()
-        self.user_sessions: Dict[int, dict] = {}
+        self.user_sessions: Dict[int, dict] = {}  # login state per user
         self._cr_tasks: Dict[int, asyncio.Task] = {}
 
     async def initialize(self):
@@ -82,103 +82,74 @@ class SkyAutoBot:
 
     # ─── Helper: buat API client dengan session ────────────────────────────────
     async def _get_api_client(self, tg_uid: int) -> Optional[SkyAPIClient]:
-        """
-        Buat SkyAPIClient dengan session yang valid.
-        Auto-extract session dari JWT jika belum ada.
-        """
         token = self.tokens.get_token(str(tg_uid))
         if not token:
             return None
-
-        # Coba get/create session
-        result = self.sessions.get_or_create(str(tg_uid), token)
+        result = self.session_mgr.get_or_create(str(tg_uid), token)
         if result:
             user_id, session_id = result
-            client = SkyAPIClient(token, user_id=user_id, session_id=session_id)
-            logger.info(f"API client ready: user={user_id[:8]}... session={session_id[:8]}...")
-            return client
-
-        # Fallback: pakai JWT saja (terbatas)
-        logger.warning("Session extraction failed, using JWT only (limited access)")
+            return SkyAPIClient(token, user_id=user_id, session_id=session_id)
         return SkyAPIClient(token)
 
-    # ─── /session ──────────────────────────────────────────────────────────────
     async def cmd_session(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
-        """Handle /session - lihat atau set session manual"""
         uid = u.effective_user.id
         args = c.args
-
-        # /session set <user_id> <session_id>
         if args and args[0] == "set" and len(args) == 3:
             user_id, session_id = args[1], args[2]
-            self.sessions.set_manual(str(uid), user_id, session_id)
-            # Verify
+            self.session_mgr.set_manual(str(uid), user_id, session_id)
             extractor = SkySessionExtractor()
             if extractor.verify_session(user_id, session_id):
                 await u.message.reply_text(
                     f"✅ <b>Session berhasil di-set!</b>\n\n"
                     f"🆔 user_id: <code>{user_id[:12]}...</code>\n"
                     f"🔑 session: <code>{session_id[:8]}...</code>\n\n"
-                    f"Session valid! Sekarang coba /cr",
-                    parse_mode='HTML'
+                    f"Session valid! Sekarang coba /cr", parse_mode='HTML'
                 )
             else:
                 await u.message.reply_text(
-                    "⚠️ Session di-set tapi tidak bisa diverifikasi.\n"
-                    "Mungkin sudah expired.",
-                    parse_mode='HTML'
+                    "⚠️ Session di-set tapi tidak bisa diverifikasi.\nMungkin sudah expired."
                 )
             return
 
-        # Tampilkan status session
         token = self.tokens.get_token(str(uid))
         if not token:
             await u.message.reply_text("❌ Login dulu! /login"); return
 
-        info = self.sessions.get_info(str(uid))
-
+        info = self.session_mgr.get_info(str(uid))
         if info and info.get("user_id"):
             uid_val = info["user_id"]
             sid_val = info.get("session", "?")
-            name = info.get("name", "?")
             extractor = SkySessionExtractor()
             is_valid = extractor.verify_session(uid_val, sid_val)
             icon = "✅" if is_valid else "❌ expired"
-
             await u.message.reply_text(
                 f"🔑 <b>Session Info</b>\n\n"
-                f"👤 Name: <b>{name}</b>\n"
+                f"👤 Name: <b>{info.get('name','?')}</b>\n"
                 f"🆔 user_id: <code>{uid_val}</code>\n"
                 f"🔐 session: <code>{sid_val[:16]}...</code>\n"
                 f"Status: {icon}\n\n"
-                f"{'✨ Session aktif! /cr siap dipakai.' if is_valid else '⚠️ Session expired. Coba /session refresh'}",
+                f"{'✨ Session aktif! /cr siap.' if is_valid else '⚠️ Expired. Set ulang via /session set'}",
                 parse_mode='HTML'
             )
         else:
-            # Coba auto-extract
-            await u.message.reply_text("⏳ Mencoba extract session dari JWT token...")
-            result = self.sessions.get_or_create(str(uid), token)
+            await u.message.reply_text("⏳ Mencoba extract session...")
+            result = self.session_mgr.get_or_create(str(uid), token)
             if result:
-                user_id, session_id = result
+                uid_val, sid_val = result
                 await u.message.reply_text(
-                    f"✅ <b>Session berhasil di-extract!</b>\n\n"
-                    f"🆔 user_id: <code>{user_id}</code>\n"
-                    f"🔐 session: <code>{session_id[:16]}...</code>\n\n"
-                    f"Sekarang /cr bisa bekerja penuh! 🎉",
+                    f"✅ <b>Session OK!</b>\n🆔 <code>{uid_val[:16]}...</code>\n"
+                    f"🔐 <code>{sid_val[:16]}...</code>\n\nCoba /cr 🎉",
                     parse_mode='HTML'
                 )
             else:
                 await u.message.reply_text(
                     f"⚠️ <b>Session tidak bisa di-extract otomatis</b>\n\n"
-                    f"Sky server memerlukan login dari game client.\n\n"
-                    f"<b>Cara manual (dari Android/PC game):</b>\n"
-                    f"1. Buka game Sky\n"
-                    f"2. Capture network traffic dengan proxy (mitmproxy/Charles)\n"
-                    f"3. Lihat request ke <code>live.radiance.thatgamecompany.com</code>\n"
-                    f"4. Copy header <code>session</code> dan <code>user-id</code>\n"
-                    f"5. Kirim ke bot:\n"
-                    f"   <code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>\n\n"
-                    f"Atau gunakan /run untuk coordinate mode (tanpa session).",
+                    f"Cara manual:\n"
+                    f"1. Buka game Sky di HP\n"
+                    f"2. Capture traffic dengan mitmproxy/HTTP Toolkit\n"
+                    f"3. Cari header <code>session</code> dan <code>user-id</code>\n"
+                    f"4. Kirim: <code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>\n\n"
+                    f"Atau pakai /run untuk coordinate mode (tanpa session).",
                     parse_mode='HTML'
                 )
 
@@ -245,7 +216,7 @@ class SkyAutoBot:
     async def cmd_login(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
         uid = u.effective_user.id
         url = await self.oauth.get_facebook_oauth_url()
-        self.sessions[uid] = {'state': 'waiting_token'}
+        self.user_sessions[uid] = {'state': 'waiting_token'}  # ← user_sessions bukan sessions
         await u.message.reply_text(
             f"🔐 <b>Login Sky CoTL</b>\n\n"
             f"<b>Step 1:</b> Buka link:\n"
@@ -719,7 +690,6 @@ class SkyAutoBot:
 
 
 
-    # ─── Message handler ───────────────────────────────────────────────────────
     async def handle_message(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
         uid = u.effective_user.id
         text = u.message.text.strip()
@@ -730,22 +700,25 @@ class SkyAutoBot:
                 if td:
                     self.tokens.add_token(str(uid), text, td)
                     self.user_sessions[uid]['state'] = 'logged_in'
-                    
-                    # ← AUTO EXTRACT SESSION!
+
+                    # Auto-extract session
                     await u.message.reply_text("⏳ Mencoba auto-extract session dari Sky server...")
-                    result = self.sessions.get_or_create(str(uid), text)
-                    
+                    try:
+                        result = self.session_mgr.get_or_create(str(uid), text)
+                    except Exception:
+                        result = None
+
                     if result:
                         user_id, session_id = result
                         extra = (
                             f"\n✅ <b>Session berhasil!</b> API penuh aktif.\n"
-                            f"🆔 user_id: <code>{user_id[:12]}...</code>\n"
+                            f"🆔 <code>{user_id[:16]}...</code>\n"
                         )
                     else:
                         extra = (
                             f"\n⚠️ Session belum bisa di-extract otomatis.\n"
-                            f"Gunakan /session untuk info lebih lanjut.\n"
-                            f"Atau langsung coba /run untuk coordinate mode.\n"
+                            f"/session untuk info lebih lanjut.\n"
+                            f"/run untuk coordinate mode (tanpa session).\n"
                         )
 
                     await u.message.reply_text(
@@ -753,8 +726,8 @@ class SkyAutoBot:
                         f"👤 Welcome, <b>{td.get('name','?')}</b>!\n"
                         f"{extra}\n"
                         f"🎮 Commands:\n"
-                        f"• /cr      – auto candle run\n"
-                        f"• /wax     – cek wax\n"
+                        f"• /cr      – auto candle run via API\n"
+                        f"• /wax     – cek wax balance\n"
                         f"• /forge   – forge wax→candles\n"
                         f"• /quests  – daily quests\n"
                         f"• /session – cek/set session\n"
