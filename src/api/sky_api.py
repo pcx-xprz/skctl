@@ -19,15 +19,23 @@ USER_AGENT = "Sky-Live-com.tgc.sky.android/0.15.1.280 (unknown; android 30.0.0; 
 class SkyAPIClient:
     """
     Client untuk Sky API.
-    Auth menggunakan session + userid dari JWT token.
-    Semua endpoint adalah POST ke /account/...
+    Bisa init dari:
+    1. JWT token saja (akan auto-extract session)
+    2. user_id + session_id langsung
     """
 
-    def __init__(self, jwt_token: str):
+    def __init__(self, jwt_token: str,
+                 user_id: Optional[str] = None,
+                 session_id: Optional[str] = None):
         self.jwt_token = jwt_token
-        self.session_id: Optional[str] = None
-        self.user_id: Optional[str] = None
+        self.session_id: Optional[str] = session_id
+        self.user_id: Optional[str] = user_id
         self._parse_jwt(jwt_token)
+        # Override jika diberikan langsung
+        if user_id:
+            self.user_id = user_id
+        if session_id:
+            self.session_id = session_id
         self.http = requests.Session()
         self.http.headers.update({
             "User-Agent": USER_AGENT,
@@ -52,6 +60,12 @@ class SkyAPIClient:
         self.session_id = session_id
         self.user_id = user_id
 
+    def set_session(self, user_id: str, session_id: str):
+        """Set session setelah berhasil extract."""
+        self.user_id = user_id
+        self.session_id = session_id
+        logger.info(f"Session set: user={user_id[:8]}... session={session_id[:8]}...")
+
     def _post(self, path: str, data: dict, retries: int = 3) -> Optional[dict]:
         """POST request ke Sky API."""
         url = f"{API_BASE}{path}"
@@ -60,6 +74,9 @@ class SkyAPIClient:
             headers["session"] = self.session_id
         if self.user_id:
             headers["user-id"] = self.user_id
+        # Tambahkan Authorization header dengan JWT sebagai fallback
+        if self.jwt_token:
+            headers["Authorization"] = f"Bearer {self.jwt_token}"
 
         for attempt in range(retries):
             try:

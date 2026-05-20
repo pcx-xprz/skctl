@@ -25,6 +25,7 @@ from api.sky_api import (
     format_account_info, format_daily_quests,
     get_mock_account_info, get_mock_daily_quests,
 )
+from auth.session_extractor import SessionManager, SkySessionExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,9 @@ class SkyAutoBot:
         self.app = None
         self.oauth = SkyOAuthHandler()
         self.tokens = TokenManager()
+        self.sessions = SessionManager()       # ← NEW: session manager
         self.runner = setup_sample_routes()
-        self.sessions: Dict[int, dict] = {}
+        self.user_sessions: Dict[int, dict] = {}
         self._cr_tasks: Dict[int, asyncio.Task] = {}
 
     async def initialize(self):
@@ -55,6 +57,7 @@ class SkyAutoBot:
             ("help",         self.cmd_help),
             ("login",        self.cmd_login),
             ("status",       self.cmd_status),
+            ("session",      self.cmd_session),    # ← NEW
             ("account",      self.cmd_account),
             ("quests",       self.cmd_quests),
             ("cr",           self.cmd_cr),
@@ -76,6 +79,108 @@ class SkyAutoBot:
         logger.info("Bot initialized")
 
 
+
+    # ─── Helper: buat API client dengan session ────────────────────────────────
+    async def _get_api_client(self, tg_uid: int) -> Optional[SkyAPIClient]:
+        """
+        Buat SkyAPIClient dengan session yang valid.
+        Auto-extract session dari JWT jika belum ada.
+        """
+        token = self.tokens.get_token(str(tg_uid))
+        if not token:
+            return None
+
+        # Coba get/create session
+        result = self.sessions.get_or_create(str(tg_uid), token)
+        if result:
+            user_id, session_id = result
+            client = SkyAPIClient(token, user_id=user_id, session_id=session_id)
+            logger.info(f"API client ready: user={user_id[:8]}... session={session_id[:8]}...")
+            return client
+
+        # Fallback: pakai JWT saja (terbatas)
+        logger.warning("Session extraction failed, using JWT only (limited access)")
+        return SkyAPIClient(token)
+
+    # ─── /session ──────────────────────────────────────────────────────────────
+    async def cmd_session(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
+        """Handle /session - lihat atau set session manual"""
+        uid = u.effective_user.id
+        args = c.args
+
+        # /session set <user_id> <session_id>
+        if args and args[0] == "set" and len(args) == 3:
+            user_id, session_id = args[1], args[2]
+            self.sessions.set_manual(str(uid), user_id, session_id)
+            # Verify
+            extractor = SkySessionExtractor()
+            if extractor.verify_session(user_id, session_id):
+                await u.message.reply_text(
+                    f"✅ <b>Session berhasil di-set!</b>\n\n"
+                    f"🆔 user_id: <code>{user_id[:12]}...</code>\n"
+                    f"🔑 session: <code>{session_id[:8]}...</code>\n\n"
+                    f"Session valid! Sekarang coba /cr",
+                    parse_mode='HTML'
+                )
+            else:
+                await u.message.reply_text(
+                    "⚠️ Session di-set tapi tidak bisa diverifikasi.\n"
+                    "Mungkin sudah expired.",
+                    parse_mode='HTML'
+                )
+            return
+
+        # Tampilkan status session
+        token = self.tokens.get_token(str(uid))
+        if not token:
+            await u.message.reply_text("❌ Login dulu! /login"); return
+
+        info = self.sessions.get_info(str(uid))
+
+        if info and info.get("user_id"):
+            uid_val = info["user_id"]
+            sid_val = info.get("session", "?")
+            name = info.get("name", "?")
+            extractor = SkySessionExtractor()
+            is_valid = extractor.verify_session(uid_val, sid_val)
+            icon = "✅" if is_valid else "❌ expired"
+
+            await u.message.reply_text(
+                f"🔑 <b>Session Info</b>\n\n"
+                f"👤 Name: <b>{name}</b>\n"
+                f"🆔 user_id: <code>{uid_val}</code>\n"
+                f"🔐 session: <code>{sid_val[:16]}...</code>\n"
+                f"Status: {icon}\n\n"
+                f"{'✨ Session aktif! /cr siap dipakai.' if is_valid else '⚠️ Session expired. Coba /session refresh'}",
+                parse_mode='HTML'
+            )
+        else:
+            # Coba auto-extract
+            await u.message.reply_text("⏳ Mencoba extract session dari JWT token...")
+            result = self.sessions.get_or_create(str(uid), token)
+            if result:
+                user_id, session_id = result
+                await u.message.reply_text(
+                    f"✅ <b>Session berhasil di-extract!</b>\n\n"
+                    f"🆔 user_id: <code>{user_id}</code>\n"
+                    f"🔐 session: <code>{session_id[:16]}...</code>\n\n"
+                    f"Sekarang /cr bisa bekerja penuh! 🎉",
+                    parse_mode='HTML'
+                )
+            else:
+                await u.message.reply_text(
+                    f"⚠️ <b>Session tidak bisa di-extract otomatis</b>\n\n"
+                    f"Sky server memerlukan login dari game client.\n\n"
+                    f"<b>Cara manual (dari Android/PC game):</b>\n"
+                    f"1. Buka game Sky\n"
+                    f"2. Capture network traffic dengan proxy (mitmproxy/Charles)\n"
+                    f"3. Lihat request ke <code>live.radiance.thatgamecompany.com</code>\n"
+                    f"4. Copy header <code>session</code> dan <code>user-id</code>\n"
+                    f"5. Kirim ke bot:\n"
+                    f"   <code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>\n\n"
+                    f"Atau gunakan /run untuk coordinate mode (tanpa session).",
+                    parse_mode='HTML'
+                )
 
     # ─── /start ────────────────────────────────────────────────────────────────
     async def cmd_start(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
@@ -180,13 +285,14 @@ class SkyAutoBot:
     # ─── /account ──────────────────────────────────────────────────────────────
     async def cmd_account(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
         uid = u.effective_user.id
-        token = self.tokens.get_token(str(uid))
-        if not token:
+        if not self.tokens.get_token(str(uid)):
             await u.message.reply_text("❌ Login dulu! /login"); return
         await u.message.reply_text("⏳ Mengambil data akun...")
+        api = await self._get_api_client(uid)
         try:
-            api = SkyAPIClient(token)
-            data = api.get_account_info() or get_mock_account_info()
+            data = api.get_account_info() if api else None
+            if not data:
+                data = get_mock_account_info()
         except Exception:
             data = get_mock_account_info()
         note = "" if data.get("_real") else "\n\n⚠️ <i>Demo data – butuh session aktif</i>"
@@ -195,17 +301,18 @@ class SkyAutoBot:
     # ─── /quests ───────────────────────────────────────────────────────────────
     async def cmd_quests(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
         uid = u.effective_user.id
-        token = self.tokens.get_token(str(uid))
-        if not token:
+        if not self.tokens.get_token(str(uid)):
             await u.message.reply_text("❌ Login dulu! /login"); return
         await u.message.reply_text("⏳ Mengambil daily quests...")
+        api = await self._get_api_client(uid)
         try:
-            api = SkyAPIClient(token)
-            quests = api.get_daily_quests() or get_mock_daily_quests()
+            quests = api.get_daily_quests() if api else None
+            if not quests:
+                quests = get_mock_daily_quests()
         except Exception:
             quests = get_mock_daily_quests()
         text = format_daily_quests(quests)
-        text += "\n\n💡 Gunakan /quests_claim untuk auto claim!"
+        text += "\n\n💡 /quests_claim untuk auto claim!"
         await u.message.reply_text(text, parse_mode='HTML')
 
 
@@ -235,8 +342,20 @@ class SkyAutoBot:
 
     async def _cr_loop(self, uid: int, u: Update):
         """Background task: Auto CR via Sky API."""
-        token = self.tokens.get_token(str(uid))
-        api = SkyAPIClient(token)
+        api = await self._get_api_client(uid)
+        if not api:
+            await u.message.reply_text("❌ Gagal buat API client!"); return
+
+        if not api.session_id:
+            await u.message.reply_text(
+                "⚠️ <b>Session tidak ada</b>\n\n"
+                "Coba:\n"
+                "1. /session → auto extract session\n"
+                "2. /session set &lt;uid&gt; &lt;sid&gt; → set manual\n"
+                "3. /run Complete All Realms → coordinate mode (tanpa session)\n",
+                parse_mode='HTML'
+            )
+            return
 
         try:
             # Import CR levels data
@@ -325,12 +444,11 @@ class SkyAutoBot:
     # ─── /wax ──────────────────────────────────────────────────────────────────
     async def cmd_wax(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
         uid = u.effective_user.id
-        token = self.tokens.get_token(str(uid))
-        if not token:
+        if not self.tokens.get_token(str(uid)):
             await u.message.reply_text("❌ Login dulu! /login"); return
         await u.message.reply_text("⏳ Mengambil wax balance...")
-        api = SkyAPIClient(token)
-        currency = api.get_currency()
+        api = await self._get_api_client(uid)
+        currency = api.get_currency() if api else None
         if not currency:
             await u.message.reply_text(
                 "⚠️ <b>Gagal ambil data currency</b>\n\n"
@@ -366,18 +484,16 @@ class SkyAutoBot:
     # ─── /forge ────────────────────────────────────────────────────────────────
     async def cmd_forge(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
         uid = u.effective_user.id
-        token = self.tokens.get_token(str(uid))
-        if not token:
+        if not self.tokens.get_token(str(uid)):
             await u.message.reply_text("❌ Login dulu! /login"); return
         await u.message.reply_text(
             "🔨 <b>Forging wax → candles...</b>\n\n"
-            "📐 Rate:\n"
-            "• 150 wax = 1 regular candle\n"
-            "• 12 season_wax = 1 season candle\n\n"
-            "⏳ Menghubungi Sky server...",
-            parse_mode='HTML'
+            "📐 Rate:\n• 150 wax = 1 candle\n• 12 season_wax = 1 season candle\n\n"
+            "⏳ Menghubungi Sky server...", parse_mode='HTML'
         )
-        api = SkyAPIClient(token)
+        api = await self._get_api_client(uid)
+        if not api:
+            await u.message.reply_text("❌ Gagal buat API client!"); return
         result = api.forge_wax()
         if result.get("error"):
             await u.message.reply_text(
@@ -607,23 +723,42 @@ class SkyAutoBot:
     async def handle_message(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
         uid = u.effective_user.id
         text = u.message.text.strip()
-        if self.sessions.get(uid, {}).get('state') == 'waiting_token':
+        if self.user_sessions.get(uid, {}).get('state') == 'waiting_token':
             if text.startswith('eyJ'):
                 await u.message.reply_text("🔍 Validating token...")
                 td = self.oauth.decode_jwt_token(text)
                 if td:
                     self.tokens.add_token(str(uid), text, td)
-                    self.sessions[uid]['state'] = 'logged_in'
+                    self.user_sessions[uid]['state'] = 'logged_in'
+                    
+                    # ← AUTO EXTRACT SESSION!
+                    await u.message.reply_text("⏳ Mencoba auto-extract session dari Sky server...")
+                    result = self.sessions.get_or_create(str(uid), text)
+                    
+                    if result:
+                        user_id, session_id = result
+                        extra = (
+                            f"\n✅ <b>Session berhasil!</b> API penuh aktif.\n"
+                            f"🆔 user_id: <code>{user_id[:12]}...</code>\n"
+                        )
+                    else:
+                        extra = (
+                            f"\n⚠️ Session belum bisa di-extract otomatis.\n"
+                            f"Gunakan /session untuk info lebih lanjut.\n"
+                            f"Atau langsung coba /run untuk coordinate mode.\n"
+                        )
+
                     await u.message.reply_text(
                         f"✅ <b>Login Berhasil!</b>\n\n"
-                        f"👤 Welcome, <b>{td.get('name','?')}</b>!\n\n"
-                        f"🎮 Sekarang coba:\n"
-                        f"• /account – info akun\n"
+                        f"👤 Welcome, <b>{td.get('name','?')}</b>!\n"
+                        f"{extra}\n"
+                        f"🎮 Commands:\n"
+                        f"• /cr      – auto candle run\n"
+                        f"• /wax     – cek wax\n"
+                        f"• /forge   – forge wax→candles\n"
                         f"• /quests  – daily quests\n"
-                        f"• /cr      – auto candle run via API!\n"
-                        f"• /wax     – cek wax balance\n\n"
-                        f"💡 Untuk /cr bekerja penuh,\n"
-                        f"   kamu perlu set session via game dulu.",
+                        f"• /session – cek/set session\n"
+                        f"• /run Complete All Realms – coordinate mode",
                         parse_mode='HTML'
                     )
                 else:
