@@ -65,16 +65,37 @@ class CandleDetector:
         Returns:
             numpy array dari screenshot
         """
-        monitor = self.sct.monitors[monitor_number]
-        screenshot = self.sct.grab(monitor)
-        
-        # Convert to numpy array
-        img = np.array(screenshot)
-        
-        # Convert BGRA to BGR
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        
-        return img
+        try:
+            monitor = self.sct.monitors[monitor_number]
+            screenshot = self.sct.grab(monitor)
+            
+            # Convert to numpy array
+            img = np.array(screenshot)
+            
+            # Convert BGRA to BGR
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            
+            return img
+        except Exception as e:
+            logger.error(f"Screen capture failed: {e}")
+            logger.warning("Returning dummy frame (WSL2/headless environment)")
+            
+            # Return dummy frame for testing in headless environment
+            # In production, you should use remote desktop or run on Windows
+            dummy_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            
+            # Add warning text to dummy frame
+            cv2.putText(
+                dummy_frame,
+                "NO DISPLAY - Run on Windows or setup X11",
+                (400, 540),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.5,
+                (0, 0, 255),
+                3
+            )
+            
+            return dummy_frame
         
     def capture_window(self, window_title: str = "Sky") -> Optional[np.ndarray]:
         """
