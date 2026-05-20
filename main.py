@@ -83,6 +83,16 @@ async def main():
 
 if __name__ == "__main__":
     try:
+        # Use nest_asyncio for compatibility
+        import nest_asyncio
+        nest_asyncio.apply()
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n\n👋 Goodbye!")
+    except ImportError:
+        # Fallback if nest_asyncio not available
+        print("Installing nest_asyncio for event loop compatibility...")
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "nest_asyncio"])
+        print("Please run the bot again: python main.py")
+        sys.exit(1)

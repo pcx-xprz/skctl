@@ -493,7 +493,23 @@ Have fun! 🌟
         """Run the bot"""
         await self.initialize()
         logger.info("Starting bot...")
-        await self.app.run_polling()
+        
+        # Use run_polling with proper config for nested event loops
+        await self.app.initialize()
+        await self.app.start()
+        await self.app.updater.start_polling()
+        
+        try:
+            # Keep running until stopped
+            import asyncio
+            while True:
+                await asyncio.sleep(1)
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Received stop signal")
+        finally:
+            await self.app.updater.stop()
+            await self.app.stop()
+            await self.app.shutdown()
 
 
 # Main entry point
