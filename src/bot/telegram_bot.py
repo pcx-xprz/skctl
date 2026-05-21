@@ -505,7 +505,9 @@ class SkyAutoBot:
             "⏳ Mengactivate & claim semua quest...",
             parse_mode='HTML'
         )
-        api = SkyAPIClient(token)
+        api = await self._get_api_client(uid)
+        if not api:
+            await u.message.reply_text("❌ Gagal buat API client!"); return
         result = api.claim_all_quests()
         if result.get("error"):
             await u.message.reply_text(
@@ -536,7 +538,9 @@ class SkyAutoBot:
             "Ini akan convert Wing Buffs → Ascended Candles 💎",
             parse_mode='HTML'
         )
-        api = SkyAPIClient(token)
+        api = await self._get_api_client(uid)
+        if not api:
+            await u.message.reply_text("❌ Gagal buat API client!"); return
         result = api.eden_run()
         if result.get("error"):
             await u.message.reply_text(
@@ -559,7 +563,9 @@ class SkyAutoBot:
         if not token:
             await u.message.reply_text("❌ Login dulu! /login"); return
         await u.message.reply_text("🎁 <b>Collecting semua gifts...</b>", parse_mode='HTML')
-        api = SkyAPIClient(token)
+        api = await self._get_api_client(uid)
+        if not api:
+            await u.message.reply_text("❌ Gagal buat API client!"); return
 
         # Ambil pending gifts dulu
         gifts_data = api.get_pending_gifts()

@@ -2,6 +2,16 @@
 Sky CoTL API Client
 Reverse-engineered dari artdeell/AutoWax4C
 API host: live.radiance.thatgamecompany.com
+
+=== PROTOKOL SKY v0.28+ ===
+Sky menggunakan MessagePack (msgpack) untuk semua body request,
+bukan JSON. Server return 418 jika menerima JSON.
+
+Header wajib per request:
+  Content-Type : application/x-msgpack
+  User-Agent   : Sky-Live-com.tgc.sky.android/0.33.2.384474 (...)
+  session      : <session_id dari game>
+  user-id      : <user_id UUID dari game>
 """
 
 import requests
@@ -9,82 +19,148 @@ import logging
 import time
 from typing import Optional, Dict, List, Tuple
 
+try:
+    import msgpack
+    MSGPACK_AVAILABLE = True
+except ImportError:
+    MSGPACK_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
-API_HOST = "live.radiance.thatgamecompany.com"
-API_BASE = f"https://{API_HOST}"
-USER_AGENT = "Sky-Live-com.tgc.sky.android/0.15.1.280 (unknown; android 30.0.0; en)"
+API_HOST   = "live.radiance.thatgamecompany.com"
+API_BASE   = f"https://{API_HOST}"
+# User-Agent harus cocok dengan versi game yang dipakai user (v0.33.2)
+USER_AGENT = "Sky-Live-com.tgc.sky.android/0.33.2.384474 (Xiaomi M2101K7BNY; android 33.0.0; id)"
 
 
 class SkyAPIClient:
     """
     Client untuk Sky API.
     Bisa init dari:
-    1. JWT token saja (akan auto-extract session)
-    2. user_id + session_id langsung
+    1. JWT token saja (tidak punya session — API calls akan gagal)
+    2. user_id + session_id langsung (WAJIB untuk API calls)
     """
 
     def __init__(self, jwt_token: str,
                  user_id: Optional[str] = None,
                  session_id: Optional[str] = None):
-        self.jwt_token = jwt_token
+        # Simpan dulu parameter eksplisit sebelum _parse_jwt bisa override
+        self.jwt_token      = jwt_token
         self.session_id: Optional[str] = session_id
-        self.user_id: Optional[str] = user_id
+        self.user_id: Optional[str]    = user_id
+        self.facebook_name: str        = "Unknown"
+
+        # Parse JWT hanya untuk ambil facebook_name — TIDAK override user_id/session_id
         self._parse_jwt(jwt_token)
-        # Override jika diberikan langsung
+
+        # Pastikan parameter eksplisit selalu menang atas hasil _parse_jwt
         if user_id:
             self.user_id = user_id
         if session_id:
             self.session_id = session_id
+
         self.http = requests.Session()
-        self.http.headers.update({
+        self._update_headers()
+
+    def _update_headers(self):
+        """Update headers session http berdasarkan state terkini."""
+        headers = {
             "User-Agent": USER_AGENT,
-            "Content-Type": "application/json; charset=utf-8",
-        })
+            "Accept":     "*/*",
+        }
+        if MSGPACK_AVAILABLE:
+            headers["Content-Type"] = "application/x-msgpack"
+            headers["Accept"]       = "application/x-msgpack, */*"
+        else:
+            # Fallback ke JSON jika msgpack tidak terinstall
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        self.http.headers.update(headers)
 
     def _parse_jwt(self, token: str):
-        """Extract user info dari JWT token."""
+        """
+        Extract info dari JWT token.
+        HANYA untuk ambil facebook_name — TIDAK set self.user_id.
+        user_id Sky (UUID) berbeda dengan sub JWT (Facebook ID).
+        """
+        if not token:
+            return
         try:
             import base64, json
             parts = token.split(".")
-            payload = parts[1] + "=="
+            if len(parts) < 2:
+                return
+            # Tambah padding base64 yang mungkin hilang
+            padding = 4 - len(parts[1]) % 4
+            payload = parts[1] + ("=" * padding)
             data = json.loads(base64.urlsafe_b64decode(payload))
-            self.user_id = data.get("sub", "")
             self.facebook_name = data.get("name", "Unknown")
-            logger.info(f"JWT parsed: user={self.facebook_name}, sub={self.user_id}")
+            logger.info(f"JWT parsed: name={self.facebook_name}, fb_sub={data.get('sub','?')}")
         except Exception as e:
-            logger.error(f"JWT parse error: {e}")
-
-    def set_session(self, session_id: str, user_id: str):
-        """Set session setelah login exchange."""
-        self.session_id = session_id
-        self.user_id = user_id
+            logger.debug(f"JWT parse skipped (token kosong/invalid): {e}")
 
     def set_session(self, user_id: str, session_id: str):
-        """Set session setelah berhasil extract."""
-        self.user_id = user_id
+        """Set session setelah berhasil extract dari game."""
+        self.user_id    = user_id
         self.session_id = session_id
         logger.info(f"Session set: user={user_id[:8]}... session={session_id[:8]}...")
 
+    def _encode_body(self, data: dict) -> bytes:
+        """Encode body ke msgpack. Fallback ke JSON jika msgpack tidak ada."""
+        if MSGPACK_AVAILABLE:
+            return msgpack.packb(data, use_bin_type=True)
+        import json
+        return json.dumps(data).encode("utf-8")
+
+    def _decode_response(self, resp: requests.Response) -> Optional[dict]:
+        """Decode response body (msgpack atau JSON)."""
+        if not resp.content:
+            return {}
+        content_type = resp.headers.get("Content-Type", "")
+        try:
+            if MSGPACK_AVAILABLE and "msgpack" in content_type:
+                return msgpack.unpackb(resp.content, raw=False)
+            # Fallback: coba JSON
+            return resp.json()
+        except Exception as e:
+            logger.debug(f"Response decode error: {e} — raw: {resp.content[:100]}")
+            return None
+
     def _post(self, path: str, data: dict, retries: int = 3) -> Optional[dict]:
-        """POST request ke Sky API."""
-        url = f"{API_BASE}{path}"
+        """POST request ke Sky API dengan msgpack body."""
+        url     = f"{API_BASE}{path}"
         headers = {}
+
+        # Session wajib ada di HTTP header
         if self.session_id:
-            headers["session"] = self.session_id
+            headers["session"]  = self.session_id
         if self.user_id:
-            headers["user-id"] = self.user_id
-        # Tambahkan Authorization header dengan JWT sebagai fallback
+            headers["user-id"]  = self.user_id
         if self.jwt_token:
             headers["Authorization"] = f"Bearer {self.jwt_token}"
 
+        body = self._encode_body(data)
+
         for attempt in range(retries):
             try:
-                resp = self.http.post(url, json=data, headers=headers, timeout=15)
+                resp = self.http.post(url, data=body, headers=headers, timeout=15)
+
                 if resp.status_code == 401:
                     logger.warning("Session expired (401)")
                     return None
-                result = resp.json() if resp.text else {}
+                if resp.status_code == 418:
+                    logger.warning(
+                        f"418 dari {path} — kemungkinan session tidak valid "
+                        f"atau format request salah. "
+                        f"{'msgpack aktif' if MSGPACK_AVAILABLE else 'msgpack tidak terinstall!'}"
+                    )
+                    return None
+
+                result = self._decode_response(resp)
+                if result is None:
+                    logger.warning(f"Tidak bisa decode response dari {path}")
+                    time.sleep(1)
+                    continue
+
                 # Handle throttle
                 if result.get("result") == "throttle":
                     cooldown = result.get("cooldown", 5)
@@ -96,6 +172,7 @@ class SkyAPIClient:
                     logger.info("Server timeout, retrying...")
                     time.sleep(2)
                     continue
+
                 return result
             except Exception as e:
                 logger.error(f"Request error ({attempt+1}/{retries}): {e}")
