@@ -73,16 +73,14 @@ class SkyAPIClient:
 
     def _update_headers(self):
         """Update headers session http berdasarkan state terkini."""
+        # Sky v0.33.2 pakai JSON (terbukti dari test: JSON→401, msgpack→400)
+        # 401 = server bisa baca format tapi session invalid
+        # 400 = server tidak bisa baca format (msgpack)
         headers = {
-            "User-Agent": USER_AGENT,
-            "Accept":     "*/*",
+            "User-Agent":   USER_AGENT,
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept":       "application/json, */*",
         }
-        if MSGPACK_AVAILABLE:
-            headers["Content-Type"] = "application/x-msgpack"
-            headers["Accept"]       = "application/x-msgpack, */*"
-        else:
-            # Fallback ke JSON jika msgpack tidak terinstall
-            headers["Content-Type"] = "application/json; charset=utf-8"
         self.http.headers.update(headers)
 
     def _parse_jwt(self, token: str):
@@ -114,21 +112,15 @@ class SkyAPIClient:
         logger.info(f"Session set: user={user_id[:8]}... session={session_id[:8]}...")
 
     def _encode_body(self, data: dict) -> bytes:
-        """Encode body ke msgpack. Fallback ke JSON jika msgpack tidak ada."""
-        if MSGPACK_AVAILABLE:
-            return msgpack.packb(data, use_bin_type=True)
+        """Encode body ke JSON (Sky v0.33.2 pakai JSON, bukan msgpack)."""
         import json
         return json.dumps(data).encode("utf-8")
 
     def _decode_response(self, resp: requests.Response) -> Optional[dict]:
-        """Decode response body (msgpack atau JSON)."""
+        """Decode response body (JSON)."""
         if not resp.content:
             return {}
-        content_type = resp.headers.get("Content-Type", "")
         try:
-            if MSGPACK_AVAILABLE and "msgpack" in content_type:
-                return msgpack.unpackb(resp.content, raw=False)
-            # Fallback: coba JSON
             return resp.json()
         except Exception as e:
             logger.debug(f"Response decode error: {e} — raw: {resp.content[:100]}")
