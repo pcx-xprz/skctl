@@ -50,24 +50,45 @@ def load_env():
 load_env()
 
 BOT_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID     = os.environ.get("TELEGRAM_CHAT_ID", "")   # Telegram user ID kamu
+CHAT_ID     = os.environ.get("TELEGRAM_CHAT_ID", "")   # Telegram user ID kamu (angka)
 
 # ── Pattern untuk capture session dari logcat ──────────────
-# Sky v0.33+ pakai UUID format untuk session dan user-id
 UUID_RE  = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 HEX32_RE = r'[0-9a-f]{32}'
 
 PATTERNS = [
-    # Format dari logcat nyata (sudah terbukti bekerja):
-    # I/ (9305): X-Session-ID: 288f2870-5ad0-417d-bfaf-0e235bdb16e2
-    (rf'X-Session-ID[:\s]+({UUID_RE})',           "session"),
-    # I/ (9305): user_id  : 18a07aa9-b69d-485c-8856-122e06562e6c
-    (rf'(?:user[_\-]?id|User-Id|user-id)[:\s]+"?({UUID_RE})',  "user_id"),
-    # session header dalam HTTP request
-    (rf'\bsession\b[:\s]+({UUID_RE})',             "session"),
-    # hex32 session (format lama)
-    (rf'\bsession\b[:\s]+({HEX32_RE})\b',         "session_hex"),
+    # X-Session-ID header (terbukti muncul di Sky v0.33 logcat)
+    # I/ (14833): X-Session-ID: 3407977f-f19e-430a-9c62-20daa774cbca
+    (rf'X-Session-ID[:\s]+({UUID_RE})',                         "session"),
+    # user-id header (kadang muncul)
+    (rf'(?:user[_\-]?id|User-Id|user-id|X-User-ID)[:\s]+"?({UUID_RE})',  "user_id"),
+    # session header generic
+    (rf'\bsession\b[:\s]+({UUID_RE})',                          "session"),
+    # hex32 session
+    (rf'\bsession\b[:\s]+({HEX32_RE})\b',                      "session_hex"),
 ]
+
+def load_saved_user_id() -> str | None:
+    """
+    Load user_id dari sessions.json yang sudah tersimpan.
+    Karena Sky v0.33 tidak log user-id di logcat,
+    kita pakai user_id yang sudah pernah di-set manual sebelumnya.
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sessions_path = os.path.join(here, "data", "sessions.json")
+    if not os.path.exists(sessions_path):
+        return None
+    try:
+        with open(sessions_path) as f:
+            data = json.load(f)
+        for tg_uid, info in data.items():
+            uid = info.get("user_id")
+            if uid:
+                print(f"{G}✅ user_id dari sessions.json: {uid}{RESET}")
+                return uid
+    except Exception as e:
+        print(f"{Y}Tidak bisa baca sessions.json: {e}{RESET}")
+    return None
 
 # Warna terminal
 G = "\033[92m"; Y = "\033[93m"; R = "\033[91m"
@@ -127,16 +148,22 @@ def get_device() -> str | None:
 def monitor_logcat(serial: str, bot_token: str, chat_id: str):
     """
     Monitor logcat terus-menerus.
-    Setiap kali ada session + user_id baru → auto kirim ke bot.
+    Setiap kali ada session baru → auto kirim ke bot.
+    Sky v0.33 hanya emit X-Session-ID, bukan user-id.
+    user_id diambil dari sessions.json yang sudah tersimpan.
     """
+    # Load user_id dari sessions.json (tidak berubah antar sesi)
+    saved_user_id = load_saved_user_id()
+
     print(f"""
 {C}{BOLD}╔══════════════════════════════════════════════════════════╗
 ║          🔄  Sky Session Keeper — Auto Update           ║
 ╚══════════════════════════════════════════════════════════╝{RESET}
 
-  Device  : {serial}
-  Bot     : {'✅ Configured' if bot_token else '❌ Tidak ada — set TELEGRAM_BOT_TOKEN di .env'}
-  Chat ID : {'✅ ' + chat_id if chat_id else '❌ Tidak ada — set TELEGRAM_CHAT_ID di .env'}
+  Device   : {serial}
+  Bot      : {'✅ Configured' if bot_token else '❌ Tidak ada — set TELEGRAM_BOT_TOKEN di .env'}
+  Chat ID  : {'✅ ' + chat_id if chat_id else '❌ Tidak ada — set TELEGRAM_CHAT_ID di .env'}
+  user_id  : {'✅ ' + saved_user_id if saved_user_id else '⚠️  Belum ada — set dulu via /session set di bot'}
 
 {Y}Cara pakai:{RESET}
   1. Script ini jalan terus di background
@@ -149,20 +176,24 @@ def monitor_logcat(serial: str, bot_token: str, chat_id: str):
 
     if not bot_token or not chat_id:
         print(f"{Y}⚠️  Bot token/chat_id belum diset!{RESET}")
-        print(f"   Session akan ditampilkan di terminal saja.")
-        print(f"   Set di file .env:\n")
-        print(f"   TELEGRAM_BOT_TOKEN=xxx")
-        print(f"   TELEGRAM_CHAT_ID=xxx  {DIM}(angka, bukan username){RESET}\n")
+        print(f"   Set di file .env:")
+        print(f"   TELEGRAM_BOT_TOKEN=<token_bot>")
+        print(f"   TELEGRAM_CHAT_ID=7506302538  {DIM}(user ID kamu, bukan bot ID){RESET}\n")
+
+    if not saved_user_id:
+        print(f"{Y}⚠️  user_id belum tersimpan!{RESET}")
+        print(f"   Set dulu sekali saja di bot Telegram:")
+        print(f"   /session set <user_id> <session_id_apapun>\n")
 
     # Clear logcat dulu
     run_adb("-s", serial, "logcat", "-c")
 
     last_session = None
-    last_user_id = None
-    last_sent    = 0       # timestamp terakhir kirim
-    COOLDOWN     = 30      # jangan kirim ulang dalam 30 detik
+    last_user_id = saved_user_id  # pakai user_id dari file
+    last_sent    = 0
+    COOLDOWN     = 30
 
-    found_session = {}     # {uuid: timestamp}
+    found_session = {}
     found_user_id = {}
 
     print(f"{G}▶ Monitoring logcat... Buka/gunakan Sky di HP{RESET}\n")
@@ -204,7 +235,6 @@ def monitor_logcat(serial: str, bot_token: str, chat_id: str):
                             print(f"\n  {G}🔑 Session baru: {val}{RESET}")
 
                     elif kind == "session_hex":
-                        # Konversi hex32 ke UUID-like jika perlu
                         found_session[val] = time.time()
                         if val != last_session:
                             print(f"\n  {G}🔑 Session (hex): {val}{RESET}")
@@ -212,35 +242,35 @@ def monitor_logcat(serial: str, bot_token: str, chat_id: str):
                     elif kind == "user_id":
                         found_user_id[val] = time.time()
                         if val != last_user_id:
-                            print(f"\n  {G}👤 User ID: {val}{RESET}")
+                            print(f"\n  {G}👤 User ID dari logcat: {val}{RESET}")
+                            last_user_id = val  # update user_id jika ketemu di logcat
 
-            # Coba match session + user_id
-            # Ambil yang paling baru (dalam 30 detik terakhir)
+            # Coba kirim session jika ada
             now = time.time()
             recent_sessions = [
                 k for k, t in found_session.items() if now - t < 30
             ]
+
+            # user_id: dari logcat atau dari sessions.json
             recent_users = [
                 k for k, t in found_user_id.items()
-                if now - t < 30 and k not in recent_sessions  # user_id != session
+                if now - t < 30 and k not in recent_sessions
             ]
+            effective_user_id = (recent_users[-1] if recent_users
+                                  else last_user_id)  # fallback ke user_id tersimpan
 
-            if recent_sessions and recent_users:
+            if recent_sessions and effective_user_id:
                 new_session = recent_sessions[-1]
-                new_user_id = recent_users[-1]
+                new_user_id = effective_user_id
 
-                # Hanya kirim jika berubah dan belum kirim baru-baru ini
-                if (new_session != last_session or new_user_id != last_user_id) \
-                        and (now - last_sent) > COOLDOWN:
-
+                if new_session != last_session and (now - last_sent) > COOLDOWN:
                     last_session = new_session
-                    last_user_id = new_user_id
                     last_sent    = now
 
                     ts = datetime.now().strftime("%H:%M:%S")
-                    print(f"\n{G}{BOLD}╔═══════════════════════════════════════╗")
-                    print(f"║  ✅ SESSION CAPTURED [{ts}]       ║")
-                    print(f"╚═══════════════════════════════════════╝{RESET}")
+                    print(f"\n{G}{BOLD}╔═══════════════════════════════════════════╗")
+                    print(f"║  ✅ SESSION CAPTURED [{ts}]         ║")
+                    print(f"╚═══════════════════════════════════════════╝{RESET}")
                     print(f"  user_id : {new_user_id}")
                     print(f"  session : {new_session[:20]}...")
 
@@ -255,6 +285,17 @@ def monitor_logcat(serial: str, bot_token: str, chat_id: str):
                     else:
                         print(f"\n  {Y}Kirim manual ke bot:{RESET}")
                         print(f"  {BOLD}/session set {new_user_id} {new_session}{RESET}\n")
+
+            elif recent_sessions and not effective_user_id:
+                # Punya session tapi tidak punya user_id
+                new_session = recent_sessions[-1]
+                if new_session != last_session:
+                    last_session = new_session
+                    print(f"\n{Y}⚠️  Session ter-capture tapi user_id belum ada!{RESET}")
+                    print(f"  session : {new_session}")
+                    print(f"  {Y}Set user_id dulu di bot:{RESET}")
+                    print(f"  /session set <user_id_kamu> {new_session}")
+                    print(f"  {DIM}(user_id adalah UUID dari logcat sebelumnya){RESET}\n")
 
     except KeyboardInterrupt:
         print(f"\n{Y}Stopped.{RESET}")
