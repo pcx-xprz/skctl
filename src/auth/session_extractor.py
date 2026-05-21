@@ -33,6 +33,7 @@ Gunakan untuk semua API calls:
 Headers: { "session": "hex32", "user-id": "uuid" }
 """
 
+import os
 import requests
 import logging
 import json
@@ -293,8 +294,13 @@ class SessionManager:
     Session = UNIK per akun Sky, bukan universal.
     """
 
-    def __init__(self, storage_path: str = "data/sessions.json"):
-        self.storage_path = storage_path
+    def __init__(self, storage_path: Optional[str] = None):
+        # Gunakan absolute path berdasarkan lokasi file ini
+        # agar tidak bergantung pada CWD saat bot dijalankan
+        _here = os.path.dirname(os.path.abspath(__file__))
+        _project_root = os.path.dirname(os.path.dirname(_here))  # naik 2x → root skctl/
+        default_path = os.path.join(_project_root, "data", "sessions.json")
+        self.storage_path = storage_path or default_path
         self.sessions: Dict[str, dict] = {}
         self.extractor = SkySessionExtractor()
         self._load()
@@ -303,18 +309,22 @@ class SessionManager:
         try:
             with open(self.storage_path) as f:
                 self.sessions = json.load(f)
+            logger.info(f"Sessions loaded ({len(self.sessions)} akun) dari {self.storage_path}")
         except FileNotFoundError:
             self.sessions = {}
+            logger.info(f"Sessions file belum ada, mulai kosong: {self.storage_path}")
         except Exception as e:
-            logger.error(f"Load sessions: {e}")
+            logger.error(f"Load sessions error: {e}")
+            self.sessions = {}
 
     def _save(self):
         try:
-            import os; os.makedirs("data", exist_ok=True)
+            os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
             with open(self.storage_path, "w") as f:
                 json.dump(self.sessions, f, indent=2)
+            logger.info(f"Sessions saved ({len(self.sessions)} akun) → {self.storage_path}")
         except Exception as e:
-            logger.error(f"Save sessions: {e}")
+            logger.error(f"Save sessions error: {e}")
 
     def get_or_create(self, tg_uid: str, jwt_token: str, sky_id: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """
