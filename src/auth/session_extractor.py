@@ -378,6 +378,9 @@ class SessionManager:
         return None
 
     def get_info(self, tg_uid: str) -> dict:
+        # Reload dari file setiap kali dipanggil
+        # Agar session_keeper.py yang update file langsung terbaca oleh bot
+        self._load()
         return self.sessions.get(tg_uid, {})
 
     def clear(self, tg_uid: str):

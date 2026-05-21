@@ -59,13 +59,13 @@ HEX32_RE = r'[0-9a-f]{32}'
 PATTERNS = [
     # X-Session-ID header (terbukti muncul di Sky v0.33 logcat)
     # I/ (14833): X-Session-ID: 3407977f-f19e-430a-9c62-20daa774cbca
+    # HANYA ini yang valid — hex32 Firebase BUKAN session Sky
     (rf'X-Session-ID[:\s]+({UUID_RE})',                         "session"),
     # user-id header (kadang muncul)
     (rf'(?:user[_\-]?id|User-Id|user-id|X-User-ID)[:\s]+"?({UUID_RE})',  "user_id"),
-    # session header generic
+    # session header generic — UUID format saja
     (rf'\bsession\b[:\s]+({UUID_RE})',                          "session"),
-    # hex32 session
-    (rf'\bsession\b[:\s]+({HEX32_RE})\b',                      "session_hex"),
+    # JANGAN capture hex32 — itu adalah Firebase/Crashlytics session, BUKAN Sky session
 ]
 
 def load_saved_user_id() -> str | None:
