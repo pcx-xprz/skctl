@@ -102,119 +102,35 @@ class SkySessionExtractor:
 
     def extract_from_jwt(self, jwt_token: str, sky_id: Optional[str] = None) -> Optional[Dict]:
         """
-        JWT Facebook → POST create_session → {user_id, session}
-        Mencoba dari payload paling lengkap (device fingerprint) sampai minimal.
+        PENTING — HASIL REVERSE ENGINEERING (21 Mei 2026):
+        =====================================================
+        Endpoint lama /account/create_session sudah DIHAPUS (404).
+        Flow auth Sky sekarang HANYA via OAuth redirect:
+
+        1. User buka di browser:
+           GET /account/auth/oauth_signin?type=Facebook&token=
+           → Redirect ke Facebook OAuth
+
+        2. Setelah login Facebook, FB redirect ke:
+           GET /account/auth/oauth_redirect?code=FB_CODE&state=Facebook~...
+           → Sky server exchange FB code → return JSON {id, alias, token}
+           → token = FB JWT yang bisa dipakai untuk game session
+
+        3. TIDAK ADA endpoint create_session yang bisa dipanggil dari luar!
+           Sky hanya accept session yang dibuat lewat flow OAuth browser.
+
+        Endpoint yang terbukti ADA (non-404):
+        - GET  /account/auth/oauth_signin  → 200 (redirect ke FB)
+        - GET  /account/auth/oauth_redirect → 200 (exchange code, return session)
+        - POST /account/get_currency        → 418 (ada, butuh session valid)
+        - POST /account/auth/login          → 418 (ada, tapi belum tahu format)
+
+        Kesimpulan: Tidak bisa auto-create session dari JWT token saja.
+        Harus lewat flow OAuth browser lengkap.
         """
         jwt_info = self._decode_jwt(jwt_token)
         logger.info(f"JWT: name={jwt_info.get('name','?')}, sub={jwt_info.get('sub','?')}")
-
-        fb_id   = jwt_info.get("sub", "")
-        seed    = sky_id or fb_id     # seed untuk device ID yang konsisten per akun
-        device  = _pick_device(seed)
-        dev_id  = _gen_device_id(seed)
-        inst_id = _gen_install_id()
-        and_id  = _gen_android_id()
-
-        ua_full = (
-            f"Sky-Live-com.tgc.sky.android/0.28.0 "
-            f"(Linux; Android {device['android']}; {device['model']} "
-            f"Build/{device['build']}; en)"
-        )
-
-        # Header lengkap mirip game asli
-        base_headers = {
-            "User-Agent":    ua_full,
-            "Content-Type":  "application/json; charset=utf-8",
-            "Host":          API_HOST,
-            "Accept":        "application/json",
-            "Connection":    "keep-alive",
-            "X-Unity-Version": "2021.3.16f1",
-        }
-
-        # ── Attempts: semua kemungkinan endpoint + payload ───────────────────────
-        # CATATAN: /account/create_session dan /account/signin → 404 (endpoint lama)
-        # Sky sudah migrasi endpoint. Coba semua variasi yang mungkin.
-        attempts = [
-            # ── Endpoint baru yang kemungkinan dipakai Sky v0.28+ ────────────
-            # 1. /v1/account/session (REST versioned)
-            (base_headers, "/v1/account/session", {
-                "type":         "facebook",
-                "token":        jwt_token,
-                "id":           sky_id or fb_id,
-                "device_id":    dev_id,
-                "install_id":   inst_id,
-                "game_version": 308028,
-                "platform":     "android",
-            }),
-            # 2. /v2/account/session
-            (base_headers, "/v2/account/session", {
-                "type":         "facebook",
-                "token":        jwt_token,
-                "id":           sky_id or fb_id,
-                "device_id":    dev_id,
-                "game_version": 308028,
-            }),
-            # 3. /account/session (tanpa create_)
-            (base_headers, "/account/session", {
-                "type":         "facebook",
-                "token":        jwt_token,
-                "id":           sky_id or fb_id,
-                "device_id":    dev_id,
-                "game_version": 308028,
-                "platform":     "android",
-            }),
-            # 4. /account/login
-            (base_headers, "/account/login", {
-                "type":         "facebook",
-                "token":        jwt_token,
-                "id":           sky_id or fb_id,
-                "device_id":    dev_id,
-                "game_version": 308028,
-            }),
-            # 5. /v1/auth/session
-            (base_headers, "/v1/auth/session", {
-                "type":   "facebook",
-                "token":  jwt_token,
-                "id":     sky_id or fb_id,
-            }),
-            # 6. /auth/facebook
-            (base_headers, "/auth/facebook", {
-                "token":        jwt_token,
-                "id":           sky_id or fb_id,
-                "device_id":    dev_id,
-                "game_version": 308028,
-            }),
-            # 7. /v1/auth/login
-            (base_headers, "/v1/auth/login", {
-                "type":   "facebook",
-                "token":  jwt_token,
-            }),
-            # 8. /auth/login
-            (base_headers, "/auth/login", {
-                "type":   "facebook",
-                "token":  jwt_token,
-                "device_id": dev_id,
-            }),
-            # 9. /account/create_session (endpoint lama — sudah 404 tapi tetap coba)
-            (base_headers, "/account/create_session", {
-                "type":         "facebook",
-                "token":        jwt_token,
-                "id":           sky_id or fb_id,
-                "device_id":    dev_id,
-                "game_version": 308028,
-                "platform":     "android",
-            }),
-        ]
-
-        for headers, endpoint, payload in attempts:
-            result = self._try_endpoint(endpoint, payload, headers)
-            if result:
-                result["name"]       = jwt_info.get("name", "Unknown")
-                result["facebook_id"] = fb_id
-                logger.info(f"✅ Session created via {endpoint} | payload keys: {list(payload.keys())}")
-                return result
-
-        logger.warning("❌ All session attempts failed.")
+        logger.warning("⚠️ Semua endpoint create_session sudah 404. Flow auth harus lewat browser OAuth.")
         return None
 
     def _try_endpoint(self, endpoint: str, payload: dict, headers: dict) -> Optional[Dict]:
