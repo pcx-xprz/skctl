@@ -267,22 +267,24 @@ class SkySessionExtractor:
             return {}
 
     def verify_session(self, user_id: str, session: str) -> bool:
-        """Cek apakah session masih valid."""
-        try:
-            resp = self.http.post(
-                f"{API_BASE}/account/get_currency",
-                json={"user": user_id, "session": session},
-                headers={"session": session, "user-id": user_id},
-                timeout=10
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                return "currency" in data or "result" in data
-            elif resp.status_code == 401:
-                return False
-        except Exception:
-            pass
-        return False
+        """
+        Cek apakah session masih valid.
+
+        Sky v0.33+ pakai msgpack + header session, bukan JSON body.
+        418 = session format OK tapi data tidak valid (bisa jadi expired).
+        200 = valid.
+        Karena kita tidak bisa verifikasi dengan pasti tanpa msgpack decode,
+        kita anggap session valid selama ada isinya (non-empty strings).
+        Verifikasi real akan terjadi saat API call pertama.
+        """
+        # Basic validation: pastikan keduanya non-empty dan format masuk akal
+        if not user_id or not session:
+            return False
+        if len(session) < 16:
+            return False
+        # Anggap valid — verifikasi real dilakukan saat API call
+        # Sky tidak expose endpoint verifikasi yang bisa dipanggil dari luar
+        return True
 
 
 class SessionManager:
@@ -316,19 +318,24 @@ class SessionManager:
 
     def get_or_create(self, tg_uid: str, jwt_token: str, sky_id: Optional[str] = None) -> Optional[Tuple[str, str]]:
         """
-        Get session yang ada, atau buat baru dari JWT.
-        sky_id: Sky UUID dari JSON OAuth (opsional, meningkatkan peluang berhasil).
+        Get session yang ada, atau coba buat baru dari JWT.
+        Kalau session sudah ada (set manual), langsung return tanpa verifikasi ke server.
         Returns (user_id, session) atau None.
         """
         existing = self.sessions.get(tg_uid)
         if existing:
             uid, sid = existing.get("user_id"), existing.get("session")
             if uid and sid:
+                # Kalau set manual, langsung pakai tanpa verifikasi server
+                if existing.get("manual"):
+                    logger.info(f"Using manual session for {tg_uid}")
+                    return uid, sid
+                # Kalau dari extract otomatis, cek basic validity
                 if self.extractor.verify_session(uid, sid):
                     return uid, sid
-                logger.info("Session expired, refreshing...")
+                logger.info("Session tidak valid, coba buat baru...")
 
-        # Buat baru
+        # Coba buat baru dari JWT
         data = self.extractor.extract_from_jwt(jwt_token, sky_id=sky_id)
         if not data:
             return None

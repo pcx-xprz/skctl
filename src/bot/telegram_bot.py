@@ -84,6 +84,15 @@ class SkyAutoBot:
     # ─── Helper: buat API client dengan session ────────────────────────────────
     async def _get_api_client(self, tg_uid: int) -> Optional[SkyAPIClient]:
         token = self.tokens.get_token(str(tg_uid))
+
+        # Coba ambil session yang sudah ada dulu (tanpa perlu JWT)
+        info = self.session_mgr.get_info(str(tg_uid))
+        if info and info.get("user_id") and info.get("session"):
+            uid = info["user_id"]
+            sid = info["session"]
+            return SkyAPIClient(token or "", user_id=uid, session_id=sid)
+
+        # Kalau tidak ada session dan ada token, coba create
         if not token:
             return None
         result = self.session_mgr.get_or_create(str(tg_uid), token)
@@ -98,18 +107,14 @@ class SkyAutoBot:
         if args and args[0] == "set" and len(args) == 3:
             user_id, session_id = args[1], args[2]
             self.session_mgr.set_manual(str(uid), user_id, session_id)
-            extractor = SkySessionExtractor()
-            if extractor.verify_session(user_id, session_id):
-                await u.message.reply_text(
-                    f"✅ <b>Session berhasil di-set!</b>\n\n"
-                    f"🆔 user_id: <code>{user_id[:12]}...</code>\n"
-                    f"🔑 session: <code>{session_id[:8]}...</code>\n\n"
-                    f"Session valid! Sekarang coba /cr", parse_mode='HTML'
-                )
-            else:
-                await u.message.reply_text(
-                    "⚠️ Session di-set tapi tidak bisa diverifikasi.\nMungkin sudah expired."
-                )
+            # Session disimpan — langsung konfirmasi tanpa verifikasi server
+            await u.message.reply_text(
+                f"✅ <b>Session berhasil di-set!</b>\n\n"
+                f"🆔 user_id: <code>{user_id}</code>\n"
+                f"🔑 session: <code>{session_id[:16]}...</code>\n\n"
+                f"Sekarang coba /cr atau /wax 🕯️",
+                parse_mode='HTML'
+            )
             return
 
         token = self.tokens.get_token(str(uid))
