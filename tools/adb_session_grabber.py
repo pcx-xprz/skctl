@@ -521,90 +521,198 @@ def _method_app_files(serial: str, package: str) -> Optional[dict]:
 
 
 def _method_logcat(serial: str, package: str) -> Optional[dict]:
-    """Monitor logcat untuk menangkap session saat login."""
-    
+    """Monitor logcat ALL — tangkap semua output termasuk native library."""
+
     print(f"""
-  {BOLD}📋 Logcat Monitor Mode{RESET}
-  
+  {BOLD}📋 Logcat Monitor (ALL tags){RESET}
+
   {Y}Langkah:{RESET}
-  1. Script akan monitor logcat HP kamu
-  2. {BOLD}Buka Sky di HP → Login Facebook{RESET}
-  3. Session akan otomatis ter-capture!
-  
-  {DIM}(Tekan Ctrl+C untuk skip metode ini){RESET}
+  1. Script monitor SEMUA logcat HP
+  2. {BOLD}Buka Sky di HP{RESET}
+  3. {BOLD}Tap tombol Login → pilih Facebook → selesai login{RESET}
+  4. Session otomatis ter-capture!
+
+  {DIM}(Tekan Ctrl+C untuk skip){RESET}
 """)
-    
-    input(f"  Tekan ENTER untuk mulai monitor logcat...")
-    
-    print(f"\n  {G}▶ Monitoring logcat... (buka Sky dan login sekarang!){RESET}")
-    print(f"  {DIM}Ctrl+C untuk skip{RESET}\n")
-    
-    # Clear logcat dulu
+
+    input("  Tekan ENTER untuk mulai...")
+
+    print(f"\n  {G}▶ Monitoring... Buka Sky sekarang dan login!{RESET}")
+    print(f"  {DIM}(Ctrl+C untuk stop){RESET}\n")
+
     run_adb("logcat", "-c", device=serial)
-    
-    # Pattern yang dicari
-    session_patterns = [
-        r'session["\s:=]+([0-9a-f]{16,})',
-        r'user.?id["\s:=]+"?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
-        r'"session"\s*:\s*"([^"]{16,})"',
-        r'"user.?id"\s*:\s*"([^"]{8,})"',
-        r'X-Session[:\s]+([0-9a-f]{16,})',
+
+    # Pattern session Sky — lebih agresif
+    patterns = [
+        # Session hex 32 chars setelah keyword
+        (r'(?:session|Session)["\s:=]+([0-9a-f]{32,64})',         "session"),
+        # UUID setelah user-id keyword
+        (r'(?:user.?id|userId|user_id)["\s:=]+"?'
+         r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', "user_id"),
+        # JSON field "session":"xxx"
+        (r'"session"\s*:\s*"([0-9a-f]{16,64})"',                  "session"),
+        # JSON field "user_id"/"user-id"
+        (r'"user.?id"\s*:\s*"([0-9a-f-]{8,})"',                   "user_id"),
+        # HTTP header format  session: xxxx
+        (r'\bsession\b[:\s]+([0-9a-f]{16,})',                      "session"),
+        # Standalone 32-char hex (bisa session)
+        (r'\b([0-9a-f]{32})\b',                                    "hex32"),
+        # UUID standalone
+        (r'\b([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-'
+         r'[89ab][0-9a-f]{3}-[0-9a-f]{12})\b',                    "uuid"),
     ]
-    
+
     session = None
     user_id = None
-    
+    hex32_candidates: list[str] = []
+
     try:
+        # Gunakan *:V untuk ALL verbose — tangkap output native library juga
         proc = subprocess.Popen(
-            ["adb", "-s", serial, "logcat", "-v", "tag",
-             f"{package}:V", "Sky:V", "*:S"],
+            ["adb", "-s", serial, "logcat", "-v", "brief", "*:V"],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
         )
-        
-        start = time.time()
-        timeout = 120  # 2 menit
-        
+
+        start   = time.time()
+        timeout = 180  # 3 menit
+
         while time.time() - start < timeout:
             line = proc.stdout.readline()
             if not line:
+                time.sleep(0.01)
                 continue
-            
-            # Print baris yang relevan
-            if any(kw in line.lower() for kw in
-                   ["session", "user_id", "userid", "login", "auth", "account"]):
-                print(f"  {DIM}{line.strip()}{RESET}")
-            
-            # Cari session
-            for pat in session_patterns:
-                m = re.search(pat, line, re.IGNORECASE)
-                if m:
+
+            # Print baris yang mengandung keyword penting
+            lower = line.lower()
+            if any(kw in lower for kw in
+                   ["session", "user_id", "userid", "user-id",
+                    "login", "auth", "account", "radiance", "tgc"]):
+                print(f"  {DIM}{line.rstrip()[:120]}{RESET}")
+
+            # Cari pattern
+            for pat, kind in patterns:
+                for m in re.finditer(pat, line, re.IGNORECASE):
                     val = m.group(1)
-                    if "session" in pat.lower() and not session:
+                    if kind == "session" and not session and len(val) >= 16:
                         session = val
-                        print(f"\n  {G}✅ Session ditemukan: {val[:20]}...{RESET}")
-                    elif "user" in pat.lower() and not user_id:
+                        print(f"\n  {G}✅ session  : {val[:20]}...{RESET}")
+                    elif kind == "user_id" and not user_id:
                         user_id = val
-                        print(f"\n  {G}✅ User-ID ditemukan: {val}{RESET}")
-            
+                        print(f"\n  {G}✅ user_id  : {val}{RESET}")
+                    elif kind == "uuid" and not user_id:
+                        user_id = val
+                        print(f"\n  {G}✅ uuid     : {val}{RESET}")
+                    elif kind == "hex32" and val not in hex32_candidates:
+                        hex32_candidates.append(val)
+
             if session and user_id:
                 proc.terminate()
-                return {"user_id": user_id, "session": session, "source": "logcat"}
-        
+                return {"user_id": user_id, "session": session, "source": "logcat_all"}
+
         proc.terminate()
-        
+
     except KeyboardInterrupt:
-        print(f"\n  {Y}Logcat monitoring dihentikan{RESET}")
-        return None
-    
-    if session or user_id:
-        print(f"\n  {Y}Data parsial:{RESET}")
-        if session: print(f"    session: {session}")
-        if user_id: print(f"    user_id: {user_id}")
-    else:
-        print(f"\n  {DIM}Tidak ada session ditemukan via logcat{RESET}")
-    
+        print(f"\n  {Y}Dihentikan{RESET}")
+
+    # Tampilkan kandidat hex32 jika belum dapat session
+    if hex32_candidates:
+        print(f"\n  {Y}Kandidat hex32 yang ditemukan (mungkin salah satunya session):{RESET}")
+        for h in hex32_candidates[-10:]:
+            print(f"    {h}")
+        if not session and len(hex32_candidates) >= 1:
+            print(f"\n  {Y}Coba set manual dengan hex32 terakhir:{RESET}")
+            print(f"  /session set <user_id> {hex32_candidates[-1]}")
+
+    if not session:
+        print(f"\n  {DIM}Session tidak ter-capture via logcat.{RESET}")
+        print(f"  {Y}Sky native binary mungkin tidak log session ke logcat.{RESET}")
+
+    return None
+
+
+def _method_tcpdump(serial: str, package: str) -> Optional[dict]:
+    """
+    Intercept traffic langsung di HP pakai tcpdump (jika tersedia).
+    Tangkap header HTTP yang mengandung session.
+    """
+    print(f"\n{C}[TCPDUMP]{RESET} Cek tcpdump di HP...")
+
+    # Cek apakah tcpdump tersedia
+    code, out, _ = run_adb("shell", "which tcpdump", device=serial)
+    if code != 0 or not out:
+        code, out, _ = run_adb("shell", "ls /system/bin/tcpdump", device=serial)
+        if code != 0:
+            print(f"  {DIM}→ tcpdump tidak ada di HP ini{RESET}")
+            return None
+
+    print(f"  {G}✅ tcpdump tersedia!{RESET}")
+    print(f"""
+  {BOLD}Langkah:{RESET}
+  1. Script akan jalankan tcpdump di HP
+  2. {BOLD}Buka Sky → login{RESET}
+  3. Header session akan ter-capture dari traffic
+
+  {DIM}(Ctrl+C untuk stop){RESET}
+""")
+    input("  Tekan ENTER untuk mulai...")
+
+    session = None
+    user_id = None
+
+    try:
+        # Jalankan tcpdump + pipe ke strings untuk lihat ASCII
+        proc = subprocess.Popen(
+            ["adb", "-s", serial, "shell",
+             "tcpdump -i any -A -s 0 'host live.radiance.thatgamecompany.com' 2>/dev/null"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
+        )
+
+        start = time.time()
+        buffer = ""
+
+        while time.time() - start < 120:
+            chunk = proc.stdout.read(512)
+            if not chunk:
+                time.sleep(0.05)
+                continue
+
+            buffer += chunk
+            lines  = buffer.split("\n")
+            buffer = lines[-1]
+
+            for line in lines[:-1]:
+                # Cari session header
+                sm = re.search(r'session:\s*([0-9a-f]{16,64})', line, re.IGNORECASE)
+                um = re.search(
+                    r'user.?id:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}'
+                    r'-[0-9a-f]{4}-[0-9a-f]{12})',
+                    line, re.IGNORECASE
+                )
+                if sm:
+                    session = sm.group(1)
+                    print(f"\n  {G}✅ SESSION: {session[:20]}...{RESET}")
+                if um:
+                    user_id = um.group(1)
+                    print(f"\n  {G}✅ USER-ID: {user_id}{RESET}")
+
+                if session and user_id:
+                    proc.terminate()
+                    return {
+                        "user_id": user_id,
+                        "session": session,
+                        "source":  "tcpdump",
+                    }
+
+        proc.terminate()
+    except KeyboardInterrupt:
+        print(f"\n  {Y}Dihentikan{RESET}")
+
     return None
 
 
