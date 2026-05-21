@@ -70,6 +70,7 @@ class SkyAutoBot:
             ("run",          self.cmd_run),
             ("stop",         self.cmd_stop),
             ("stats",        self.cmd_stats),
+            ("debug",        self.cmd_debug),   # ← debug response server Sky
         ]
         for name, handler in cmds:
             self.app.add_handler(CommandHandler(name, handler))
@@ -592,6 +593,39 @@ class SkyAutoBot:
             )
         lines.append("💡 <code>/run [nama route]</code>")
         await u.message.reply_text("\n".join(lines), parse_mode='HTML')
+
+    # ─── /debug ────────────────────────────────────────────────────────────────
+    async def cmd_debug(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
+        uid = u.effective_user.id
+        token = self.tokens.get_token(str(uid))
+        if not token:
+            await u.message.reply_text("❌ Login dulu! /login"); return
+
+        await u.message.reply_text("🔍 <b>Debug: kirim raw request ke Sky server...</b>", parse_mode='HTML')
+
+        sky_id = self.user_sessions.get(uid, {}).get('sky_id')
+        extractor = SkySessionExtractor()
+        raw = extractor.debug_raw(token, sky_id=sky_id)
+
+        msg_parts = ["🧪 <b>Raw Response dari Sky Server:</b>\n"]
+        for r in raw.get("results", []):
+            ep   = r.get("endpoint", "?")
+            st   = r.get("status", "ERR")
+            body = r.get("body", r.get("error", "no response"))
+            # Escape HTML
+            body_safe = body.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+            msg_parts.append(
+                f"<b>Endpoint:</b> <code>{ep}</code>\n"
+                f"<b>HTTP:</b> {st}\n"
+                f"<b>Response:</b>\n<pre>{body_safe[:300]}</pre>\n"
+            )
+
+        msg_parts.append(
+            f"\n<b>device_id dipakai:</b> <code>{raw.get('device_id','?')[:16]}...</code>\n"
+            f"<b>fb_id:</b> <code>{raw.get('fb_id','?')}</code>\n\n"
+            f"💡 Dari sini kita bisa tahu kenapa server reject."
+        )
+        await u.message.reply_text("\n".join(msg_parts), parse_mode='HTML')
 
     # ─── /run ──────────────────────────────────────────────────────────────────
     async def cmd_run(self, u: Update, c: ContextTypes.DEFAULT_TYPE):

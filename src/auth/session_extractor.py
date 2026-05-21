@@ -212,8 +212,12 @@ class SkySessionExtractor:
                 timeout=15
             )
             status = resp.status_code
-            preview = resp.text[:200]
+            preview = resp.text[:300]
             logger.info(f"  POST {endpoint} → {status}: {preview}")
+
+            # Simpan response terakhir untuk debug
+            self._last_status = status
+            self._last_response = resp.text[:500]
 
             if status in (200, 201):
                 try:
@@ -229,6 +233,53 @@ class SkySessionExtractor:
         except Exception as e:
             logger.debug(f"  {endpoint} exception: {e}")
         return None
+
+    def debug_raw(self, jwt_token: str, sky_id: Optional[str] = None) -> dict:
+        """
+        Kirim request ke create_session dan return response mentah.
+        Dipakai untuk debug — lihat apa yang server Sky kembalikan.
+        """
+        jwt_info = self._decode_jwt(jwt_token)
+        fb_id  = jwt_info.get("sub", "")
+        seed   = sky_id or fb_id
+        device = _pick_device(seed)
+        dev_id = _gen_device_id(seed)
+
+        ua = (
+            f"Sky-Live-com.tgc.sky.android/0.28.0 "
+            f"(Linux; Android {device['android']}; {device['model']} "
+            f"Build/{device['build']}; en)"
+        )
+        headers = {
+            "User-Agent":      ua,
+            "Content-Type":    "application/json; charset=utf-8",
+            "Host":            API_HOST,
+            "Accept":          "application/json",
+            "X-Unity-Version": "2021.3.16f1",
+        }
+        payload = {
+            "type":         "facebook",
+            "token":        jwt_token,
+            "id":           sky_id or fb_id,
+            "device_id":    dev_id,
+            "game_version": 308028,
+            "platform":     "android",
+        }
+        results = []
+        for endpoint in ["/account/create_session", "/account/signin"]:
+            try:
+                resp = requests.post(
+                    f"{API_BASE}{endpoint}",
+                    json=payload, headers=headers, timeout=15
+                )
+                results.append({
+                    "endpoint": endpoint,
+                    "status":   resp.status_code,
+                    "body":     resp.text[:400],
+                })
+            except Exception as e:
+                results.append({"endpoint": endpoint, "error": str(e)})
+        return {"results": results, "device_id": dev_id, "fb_id": fb_id}
 
     def _decode_jwt(self, token: str) -> dict:
         """Decode JWT payload tanpa verifikasi."""
