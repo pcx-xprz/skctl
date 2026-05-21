@@ -223,11 +223,13 @@ class SkyAutoBot:
             f"<b>Step 1:</b> Buka link berikut di browser:\n"
             f"👉 <a href='{url}'>LOGIN WITH FACEBOOK</a>\n\n"
             f"<b>Step 2:</b> Login dengan akun Facebook kamu\n\n"
-            f"<b>Step 3:</b> Setelah redirect, kamu akan lihat JSON seperti ini:\n"
+            f"<b>Step 3:</b> Setelah authorize, kamu akan diarahkan ke halaman yang menampilkan JSON:\n"
             f"<code>{{\"id\":\"...\",\"alias\":\"...\",\"token\":\"eyJ...\"}}</code>\n\n"
             f"<b>Step 4:</b> Copy <b>seluruh JSON</b> tersebut dan paste di sini ⬇️\n\n"
-            f"<i>💡 Bisa juga paste raw token eyJ... saja jika mau</i>\n"
-            f"⏰ Token berlaku ~1 jam. Setelah login, gunakan /cr untuk auto CR!",
+            f"<i>💡 Bisa juga paste:</i>\n"
+            f"<i>• Raw JWT token yang dimulai <code>eyJ...</code></i>\n"
+            f"<i>• FB code dari URL (<code>?code=AQL...</code>) — bot akan exchange otomatis</i>\n\n"
+            f"⏰ Token berlaku ~1 jam.",
             parse_mode='HTML', disable_web_page_preview=True
         )
 
@@ -727,92 +729,111 @@ class SkyAutoBot:
 
 
     async def handle_message(self, u: Update, c: ContextTypes.DEFAULT_TYPE):
-        uid = u.effective_user.id
+        uid  = u.effective_user.id
         text = u.message.text.strip()
-        if self.user_sessions.get(uid, {}).get('state') == 'waiting_token':
-            jwt_token = None
 
-            # Coba parse sebagai JSON dulu (format FengWu: {"id":..., "alias":..., "token":"eyJ..."})
-            if text.startswith('{'):
-                try:
-                    import json as _json
-                    parsed = _json.loads(text)
-                    jwt_token = parsed.get('token') or parsed.get('access_token')
-                    sky_uuid = parsed.get('id')
-                    alias = parsed.get('alias', 'Unknown')
-                    if jwt_token:
-                        # Simpan sky_id untuk dipakai saat create_session
-                        if sky_uuid:
-                            self.user_sessions[uid]['sky_id'] = sky_uuid
-                        await u.message.reply_text(
-                            f"✅ JSON diterima!\n"
-                            f"👤 Alias: <b>{alias}</b>\n"
-                            f"🆔 Sky ID: <code>{sky_uuid}</code>\n"
-                            f"🔍 Memvalidasi token...",
-                            parse_mode='HTML'
-                        )
-                except Exception:
-                    pass
+        if self.user_sessions.get(uid, {}).get('state') != 'waiting_token':
+            await u.message.reply_text("Ketik /help untuk bantuan 💡")
+            return
 
-            # Fallback: raw JWT token
-            if not jwt_token and text.startswith('eyJ'):
-                jwt_token = text
+        jwt_token = None
+        sky_uuid  = None
 
-            if jwt_token:
-                td = self.oauth.decode_jwt_token(jwt_token)
-                if td:
-                    self.tokens.add_token(str(uid), jwt_token, td)
-                    self.user_sessions[uid]['state'] = 'logged_in'
-
-                    # Auto-coba extract session langsung setelah login
-                    sky_id_from_json = self.user_sessions[uid].get('sky_id')
+        # ── 1. JSON lengkap {"id","alias","token"} dari oauth_redirect ────────
+        if text.startswith('{'):
+            try:
+                import json as _j
+                parsed   = _j.loads(text)
+                jwt_token = parsed.get('token') or parsed.get('access_token')
+                sky_uuid  = parsed.get('id')
+                alias     = parsed.get('alias', 'Unknown')
+                if jwt_token:
+                    if sky_uuid:
+                        self.user_sessions[uid]['sky_id'] = sky_uuid
                     await u.message.reply_text(
-                        f"⏳ <b>Mencoba extract session...</b>\n\n"
-                        f"🤖 Mengirim device fingerprint Android ke Sky server\n"
-                        f"🔄 Mencoba 7 kombinasi payload...",
+                        f"✅ JSON diterima!\n"
+                        f"👤 Alias: <b>{alias}</b>\n"
+                        f"🆔 Sky ID: <code>{sky_uuid}</code>\n"
+                        f"🔍 Memvalidasi token...",
                         parse_mode='HTML'
                     )
-                    result = self.session_mgr.get_or_create(str(uid), jwt_token, sky_id=sky_id_from_json)
-                    if result:
-                        sky_uid, session_id = result
-                        await u.message.reply_text(
-                            f"🎉 <b>Login Berhasil!</b>\n\n"
-                            f"👤 Name: <b>{td.get('name', 'Unknown')}</b>\n"
-                            f"🆔 Sky UUID: <code>{sky_uid}</code>\n"
-                            f"🔐 Session: <code>{session_id[:16]}...</code>\n\n"
-                            f"✅ Session aktif! Coba /cr sekarang 🕯️",
-                            parse_mode='HTML'
-                        )
-                    else:
-                        await u.message.reply_text(
-                            f"⚠️ <b>Semua attempt gagal — server masih reject.</b>\n\n"
-                            f"👤 Name: <b>{td.get('name', 'Unknown')}</b>\n\n"
-                            f"Server Sky kemungkinan memverifikasi device yang sudah pernah\n"
-                            f"login sebelumnya (registered device check).\n\n"
-                            f"<b>✅ Solusi paling pasti (5 menit):</b>\n"
-                            f"1. Install <b>HTTP Toolkit</b> di PC: httptoolkit.com\n"
-                            f"2. Scan QR dari HP Android kamu\n"
-                            f"3. Buka game Sky → login sampai masuk\n"
-                            f"4. Di HTTP Toolkit filter: <code>live.radiance.thatgamecompany.com</code>\n"
-                            f"5. Ambil header <code>session</code> dan <code>user-id</code>\n"
-                            f"6. Kirim ke bot: <code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>",
-                            parse_mode='HTML'
-                        )
-                else:
-                    await u.message.reply_text(
-                        "❌ Token tidak valid atau tidak bisa didecode.\n"
-                        "Coba /login lagi dan paste ulang token yang benar."
-                    )
-            else:
+            except Exception:
+                pass
+
+        # ── 2. Raw JWT token ──────────────────────────────────────────────────
+        if not jwt_token and text.startswith('eyJ'):
+            jwt_token = text
+
+        # ── 3. Facebook OAuth code (AQL...) — exchange otomatis ──────────────
+        #    Ini yang BARU! User tinggal copy code dari URL redirect, bukan JWT
+        if not jwt_token and (text.startswith('AQL') or text.startswith('AQR') or
+                               (len(text) > 100 and '-' in text and '_' in text and '.' not in text[:20])):
+            await u.message.reply_text(
+                "🔄 <b>Mendeteksi Facebook OAuth code...</b>\n"
+                "⏳ Menukar code ke token Sky...",
+                parse_mode='HTML'
+            )
+            sky_data = await asyncio.get_event_loop().run_in_executor(
+                None, self.oauth.exchange_fb_code, text
+            )
+            if sky_data and sky_data.get('token'):
+                jwt_token = sky_data['token']
+                sky_uuid  = sky_data.get('id')
+                if sky_uuid:
+                    self.user_sessions[uid]['sky_id'] = sky_uuid
                 await u.message.reply_text(
-                    "⚠️ Format tidak dikenali.\n\n"
-                    "Kirim salah satu:\n"
-                    "• JSON dari Sky OAuth: <code>{\"id\":\"...\",\"alias\":\"...\",\"token\":\"eyJ...\"}</code>\n"
-                    "• Raw JWT token yang dimulai dengan <code>eyJ...</code>",
+                    f"✅ Code berhasil ditukar!\n"
+                    f"👤 Alias: <b>{sky_data.get('alias', '?')}</b>\n"
+                    f"🆔 Sky ID: <code>{sky_uuid}</code>",
                     parse_mode='HTML'
                 )
+            else:
+                await u.message.reply_text(
+                    "❌ <b>Code sudah expired atau tidak valid.</b>\n\n"
+                    "FB code hanya berlaku ~10 menit dan sekali pakai.\n"
+                    "Coba /login lagi dan langsung paste code-nya.",
+                    parse_mode='HTML'
+                )
+                return
+
+        # ── Proses JWT token ──────────────────────────────────────────────────
+        if jwt_token:
+            td = self.oauth.decode_jwt_token(jwt_token)
+            if td:
+                self.tokens.add_token(str(uid), jwt_token, td)
+                self.user_sessions[uid]['state'] = 'logged_in'
+
+                await u.message.reply_text(
+                    f"✅ <b>Login Berhasil!</b>\n\n"
+                    f"👤 Name: <b>{td.get('name', 'Unknown')}</b>\n"
+                    f"🆔 Sky ID: <code>{sky_uuid or td.get('sub','?')}</code>\n\n"
+                    f"⚠️ <b>Catatan penting:</b>\n"
+                    f"Bot bisa login dan menyimpan token kamu, tapi untuk fitur\n"
+                    f"<b>/cr, /wax, /forge</b> butuh <b>session</b> yang hanya ada di game.\n\n"
+                    f"<b>Cara dapat session (1x saja, berlaku lama):</b>\n"
+                    f"1. Buka game Sky di HP\n"
+                    f"2. Intercept traffic dengan <b>HTTP Toolkit</b> (httptoolkit.com)\n"
+                    f"3. Filter: <code>live.radiance.thatgamecompany.com</code>\n"
+                    f"4. Ambil header <code>session</code> dan <code>user-id</code>\n"
+                    f"5. Kirim: <code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>\n\n"
+                    f"🗺️ Atau gunakan <b>/run Complete All Realms</b> (coordinate mode, tanpa session)",
+                    parse_mode='HTML'
+                )
+            else:
+                await u.message.reply_text(
+                    "❌ Token tidak valid. Coba /login lagi."
+                )
         else:
-            await u.message.reply_text("Ketik /help untuk bantuan 💡")
+            await u.message.reply_text(
+                "⚠️ <b>Format tidak dikenali.</b>\n\n"
+                "Kirim salah satu:\n"
+                "• <b>JSON</b> dari Sky OAuth: <code>{\"id\":\"...\",\"alias\":\"...\",\"token\":\"eyJ...\"}</code>\n"
+                "• <b>JWT token</b>: dimulai <code>eyJ...</code>\n"
+                "• <b>FB code</b>: dimulai <code>AQL...</code> (dari URL setelah login FB)\n\n"
+                "💡 Cara paling mudah: setelah klik link login dan authorize FB,\n"
+                "copy <b>seluruh JSON</b> yang muncul di halaman dan paste di sini.",
+                parse_mode='HTML'
+            )
 
     # ─── Run ───────────────────────────────────────────────────────────────────
     async def run(self):

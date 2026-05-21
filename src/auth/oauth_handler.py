@@ -1,46 +1,126 @@
 """
 OAuth Handler untuk Sky: Children of the Light
 Menangani Facebook OAuth flow dan JWT token management
+
+=== FLOW OAUTH YANG TERBUKTI BEKERJA (21 Mei 2026) ===
+
+1. GET /account/auth/oauth_signin?type=Facebook&token=
+   → Redirect ke Facebook OAuth dialog
+
+2. User login Facebook, FB POST ke /games_service/save/ dengan:
+   - app_id: 293746044767069
+   - redirect_uri: https://live.radiance.thatgamecompany.com/account/auth/oauth_redirect
+   - state: Facebook~https://live.radiance.thatgamecompany.com/account/auth/oauth_redirect
+   - scope: openid, gaming_profile
+
+3. Facebook redirect browser ke:
+   GET /account/auth/oauth_redirect?code=FB_CODE&state=Facebook~...
+
+4. Sky server exchange code → return JSON:
+   {"id":"828981538292688","alias":"Rika","token":"eyJ..."}
+   → token = FB JWT (bukan session)
+
+CATATAN PENTING:
+- Response /oauth_redirect TIDAK mengandung session!
+- Session hanya ada di game client binary (msgpack protocol)
+- Untuk mendapat session, perlu intercept traffic game asli via mitmproxy/HTTP Toolkit
+- Field yang ada di response: id (Sky ID), alias, token (FB JWT)
 """
 
 import jwt
 import json
 import asyncio
 import logging
+import requests
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-from playwright.async_api import async_playwright, Browser, Page
-import requests
 
 logger = logging.getLogger(__name__)
+
+try:
+    from playwright.async_api import async_playwright, Browser, Page
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    logger.warning("playwright tidak tersedia — automated browser login tidak bisa dipakai")
 
 
 class SkyOAuthHandler:
     """Handler untuk Facebook OAuth authentication ke Sky CoTL"""
     
+    OAUTH_REDIRECT = "https://live.radiance.thatgamecompany.com/account/auth/oauth_redirect"
+    OAUTH_SIGNIN   = "https://live.radiance.thatgamecompany.com/account/auth/oauth_signin"
+
     def __init__(self, auth_url: str = "https://live.radiance.thatgamecompany.com"):
         self.auth_url = auth_url
         self.oauth_endpoint = "/account/auth/oauth_signin"
-        self.browser: Optional[Browser] = None
-        self.page: Optional[Page] = None
-        
+        self.browser = None
+        self.page    = None
+
     async def initialize_browser(self, headless: bool = False):
         """Initialize Playwright browser"""
+        if not PLAYWRIGHT_AVAILABLE:
+            raise RuntimeError("playwright tidak terinstall. Jalankan: pip install playwright && playwright install chromium")
         playwright = await async_playwright().start()
         self.browser = await playwright.chromium.launch(headless=headless)
-        self.page = await self.browser.new_page()
+        self.page    = await self.browser.new_page()
         logger.info("Browser initialized")
-        
+
     async def close_browser(self):
-        """Close browser instance"""
         if self.browser:
             await self.browser.close()
             logger.info("Browser closed")
-            
+
     async def get_facebook_oauth_url(self) -> str:
         """Generate Facebook OAuth URL untuk Sky CoTL"""
-        oauth_url = f"{self.auth_url}{self.oauth_endpoint}?type=Facebook&token="
-        return oauth_url
+        return f"{self.auth_url}{self.oauth_endpoint}?type=Facebook&token="
+
+    # ── CARA BARU: Exchange FB code → JSON Sky ─────────────────────────────────
+    def exchange_fb_code(self, code: str) -> Optional[Dict]:
+        """
+        Tukar FB OAuth code dengan data Sky (id, alias, token).
+
+        Ini adalah flow yang TERBUKTI bekerja dari reverse engineering:
+        GET /account/auth/oauth_redirect?code=FB_CODE&state=Facebook~REDIRECT_URL
+        → Response: {"id":"...","alias":"...","token":"eyJ..."}
+
+        Args:
+            code: Facebook OAuth authorization code
+
+        Returns:
+            Dict {"id", "alias", "token"} atau None jika gagal
+        """
+        state = f"Facebook~{self.OAUTH_REDIRECT}"
+        try:
+            resp = requests.get(
+                self.OAUTH_REDIRECT,
+                params={"code": code, "state": state},
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/148.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "application/json, text/html, */*",
+                    "Referer": "https://web.facebook.com/",
+                },
+                timeout=15,
+                allow_redirects=True,
+            )
+            logger.info(f"oauth_redirect → {resp.status_code}: {resp.text[:200]}")
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    if data.get("token") and data.get("id"):
+                        logger.info(f"✅ FB code exchange sukses! alias={data.get('alias')}")
+                        return data
+                    if data.get("error"):
+                        logger.warning(f"Server error: {data['error']}")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"exchange_fb_code error: {e}")
+        return None
         
     async def automate_facebook_login(
         self, 
