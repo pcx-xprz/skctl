@@ -542,24 +542,34 @@ def _method_logcat(serial: str, package: str) -> Optional[dict]:
 
     run_adb("logcat", "-c", device=serial)
 
-    # Pattern session Sky — lebih agresif
+    # Pattern session Sky — berdasarkan analisis logcat nyata
+    # Sky pakai: X-Session-ID (UUID) dan session header (hex32)
+    # user-id dari X-Session-ID atau User-ID header
     patterns = [
-        # Session hex 32 chars setelah keyword
-        (r'(?:session|Session)["\s:=]+([0-9a-f]{32,64})',         "session"),
-        # UUID setelah user-id keyword
-        (r'(?:user.?id|userId|user_id)["\s:=]+"?'
-         r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', "user_id"),
-        # JSON field "session":"xxx"
-        (r'"session"\s*:\s*"([0-9a-f]{16,64})"',                  "session"),
-        # JSON field "user_id"/"user-id"
-        (r'"user.?id"\s*:\s*"([0-9a-f-]{8,})"',                   "user_id"),
-        # HTTP header format  session: xxxx
+        # ── PALING PENTING: X-Session-ID (dari logcat nyata) ─────────────────
+        (r'X-Session-ID[:\s]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}'
+         r'-[0-9a-f]{4}-[0-9a-f]{12})',                            "x_session_id"),
+        # ── User-Agent Sky — extract versi ───────────────────────────────────
+        (r'User-Agent.*?Sky-Live.*?/(\S+)',                         "user_agent"),
+        # ── session hex 32 chars setelah keyword ─────────────────────────────
+        (r'(?:session|Session)["\s:=]+([0-9a-f]{32,64})',          "session"),
+        # ── UUID setelah user-id keyword ──────────────────────────────────────
+        (r'(?:user.?id|userId|user_id|User-Id)["\s:=]+"?'
+         r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+                                                                    "user_id"),
+        # ── JSON field ────────────────────────────────────────────────────────
+        (r'"session"\s*:\s*"([0-9a-f]{16,64})"',                   "session"),
+        (r'"user.?id"\s*:\s*"([0-9a-f-]{8,})"',                    "user_id"),
+        # ── HTTP header format ─────────────────────────────────────────────────
         (r'\bsession\b[:\s]+([0-9a-f]{16,})',                      "session"),
-        # Standalone 32-char hex (bisa session)
-        (r'\b([0-9a-f]{32})\b',                                    "hex32"),
-        # UUID standalone
-        (r'\b([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-'
-         r'[89ab][0-9a-f]{3}-[0-9a-f]{12})\b',                    "uuid"),
+        (r'\bX-User-ID\b[:\s]+'
+         r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+                                                                    "user_id"),
+        # ── Standalone hex32 ──────────────────────────────────────────────────
+        (r'\b([0-9a-f]{32})\b',                                     "hex32"),
+        # ── UUID standalone ───────────────────────────────────────────────────
+        (r'\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}'
+         r'-[0-9a-f]{4}-[0-9a-f]{12})\b',                         "uuid"),
     ]
 
     session = None
@@ -596,21 +606,55 @@ def _method_logcat(serial: str, package: str) -> Optional[dict]:
             for pat, kind in patterns:
                 for m in re.finditer(pat, line, re.IGNORECASE):
                     val = m.group(1)
-                    if kind == "session" and not session and len(val) >= 16:
-                        session = val
-                        print(f"\n  {G}✅ session  : {val[:20]}...{RESET}")
-                    elif kind == "user_id" and not user_id:
-                        user_id = val
-                        print(f"\n  {G}✅ user_id  : {val}{RESET}")
-                    elif kind == "uuid" and not user_id:
-                        user_id = val
-                        print(f"\n  {G}✅ uuid     : {val}{RESET}")
+                    if kind == "x_session_id":
+                        # X-Session-ID adalah Sky internal session (UUID format)
+                        # Ini BERBEDA dari Firebase session
+                        if not session:
+                            session = val
+                            print(f"\n  {G}✅ X-Session-ID : {val}{RESET}")
+                    elif kind == "session" and not session:
+                        # Hanya capture jika bukan Firebase/Crashlytics session
+                        # Firebase session biasanya muncul setelah "Notified CRASHLYTICS"
+                        if "firebase" not in line.lower() and "crashlytics" not in line.lower():
+                            session = val
+                            print(f"\n  {G}✅ session  : {val[:20]}...{RESET}")
+                    elif kind in ("user_id", "uuid") and not user_id:
+                        # Filter: jangan ambil X-Session-ID yang sama sebagai user_id
+                        if val != session:
+                            user_id = val
+                            print(f"\n  {G}✅ user_id  : {val}{RESET}")
                     elif kind == "hex32" and val not in hex32_candidates:
-                        hex32_candidates.append(val)
+                        # Filter Firebase/Crashlytics session IDs
+                        if "firebase" not in line.lower() and "crashlytics" not in line.lower():
+                            hex32_candidates.append(val)
 
             if session and user_id:
                 proc.terminate()
                 return {"user_id": user_id, "session": session, "source": "logcat_all"}
+
+            # Kondisi khusus: dapat X-Session-ID (UUID) tanpa user_id terpisah
+            # Di Sky terbaru: X-Session-ID IS the session token (format UUID)
+            # user_id akan muncul setelah login berhasil
+            if session and re.match(
+                r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+                session
+            ):
+                # Cek apakah ada UUID lain yang bisa jadi user_id
+                if user_id and user_id != session:
+                    proc.terminate()
+                    return {"user_id": user_id, "session": session, "source": "logcat_all"}
+                elif len(hex32_candidates) >= 1:
+                    # Gunakan hex32 terbaru yang bukan Firebase sebagai session hex
+                    # dan X-Session-ID sebagai user_id
+                    for h in reversed(hex32_candidates):
+                        if h != session.replace("-", ""):
+                            proc.terminate()
+                            return {
+                                "user_id": session,   # X-Session-ID → user_id
+                                "session": h,          # hex32 → session
+                                "source":  "logcat_xsessionid",
+                                "note":    "X-Session-ID used as user_id, hex32 as session",
+                            }
 
         proc.terminate()
 
