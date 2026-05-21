@@ -2,12 +2,17 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
 ║       Sky CoTL — ADB Session Grabber                        ║
-║       Grab session langsung dari HP via USB Debug           ║
+║       Grab session via USB Debug ATAU WiFi (tanpa kabel)    ║
 ╠══════════════════════════════════════════════════════════════╣
-║  CARA PAKAI:                                                ║
+║  CARA PAKAI (USB):                                          ║
 ║  1. Aktifkan USB Debugging di HP                            ║
 ║  2. Colok HP ke laptop via USB                              ║
 ║  3. Jalankan: python adb_session_grabber.py                 ║
+║                                                              ║
+║  CARA PAKAI (WiFi - tanpa kabel):                           ║
+║  1. HP dan laptop di WiFi yang sama                         ║
+║  2. python adb_session_grabber.py --wifi <IP_HP>            ║
+║     atau jalankan interaktif → pilih mode WiFi              ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Requirements:
@@ -17,11 +22,22 @@ ADB:
   Windows: https://developer.android.com/tools/releases/platform-tools
   Mac:     brew install android-platform-tools
   Linux:   sudo apt install adb
+
+TROUBLESHOOT (adb devices kosong):
+  1. USB Debugging belum aktif
+     → Settings > About Phone > tap Build Number 7x
+     → Settings > Developer Options > USB Debugging ✓
+  2. Mode USB salah
+     → Notif HP setelah colok USB → pilih "File Transfer" bukan "Charge"
+  3. Driver ADB Windows belum install
+     → Install Universal ADB Driver: https://adb.clockworkmod.com/
+     → Atau jalankan: fix_adb_windows.bat
 """
 
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -39,14 +55,15 @@ SKY_PACKAGES = [
     "com.tgc.sky.android.huawei",
 ]
 
-OUTPUT_FILE = "sky_session_result.json"
+OUTPUT_FILE  = "sky_session_result.json"
+ADB_WIFI_PORT = 5555
 
 
 def banner():
     print(f"""
 {C}{BOLD}╔══════════════════════════════════════════════════════════╗
-║        🔌  Sky CoTL ADB Session Grabber  🔌              ║
-║        Grab session langsung dari HP via USB Debug       ║
+║     🔌  Sky CoTL ADB Session Grabber  📶               ║
+║     USB Debug  /  WiFi (tanpa kabel)  /  Logcat        ║
 ╚══════════════════════════════════════════════════════════╝{RESET}
 """)
 
@@ -101,51 +118,176 @@ def check_adb() -> bool:
     return True
 
 
+def diagnose_adb_empty():
+    """Tampilkan panduan fix ketika adb devices kosong."""
+    print(f"""
+{Y}{BOLD}⚠️  adb devices kosong — 3 kemungkinan penyebab:{RESET}
+
+{BOLD}PENYEBAB 1 — USB Debugging belum aktif (paling umum){RESET}
+  Di HP kamu:
+  {Y}1.{RESET} Settings → About Phone
+  {Y}2.{RESET} Tap {BOLD}"Build Number"{RESET} sebanyak {BOLD}7 kali{RESET} berturut-turut
+     (muncul notif "You are a developer!")
+  {Y}3.{RESET} Settings → Developer Options
+  {Y}4.{RESET} Aktifkan {BOLD}"USB Debugging"{RESET} ✓
+  {Y}5.{RESET} Cabut dan colok ulang kabel USB
+  {Y}6.{RESET} Tap {BOLD}"Allow"{RESET} di popup HP
+
+{BOLD}PENYEBAB 2 — Mode USB salah (Charge Only){RESET}
+  Setelah colok USB, lihat notifikasi di HP:
+  {Y}→{RESET} Tap notif → pilih {BOLD}"File Transfer (MTP)"{RESET}
+  {Y}→{RESET} BUKAN "Charge Only"
+
+{BOLD}PENYEBAB 3 — Driver ADB Windows belum install{RESET}
+  {Y}→{RESET} Buka Device Manager (Win+X → Device Manager)
+  {Y}→{RESET} Cari device dengan tanda ! kuning
+  {Y}→{RESET} Klik kanan → Update Driver
+  
+  Atau install Universal ADB Driver:
+  {BOLD}https://adb.clockworkmod.com/{RESET}
+
+{BOLD}FIX CEPAT:{RESET}
+  Jalankan: {BOLD}fix_adb_windows.bat{RESET}  (ada di folder tools/)
+
+{DIM}──────────────────────────────────────────────{RESET}
+{BOLD}Alternatif: ADB via WiFi (tanpa kabel){RESET}
+  Tidak perlu USB sama sekali!
+  Syarat: HP dan laptop di WiFi yang sama
+  Cara: python adb_session_grabber.py --wifi <IP_HP>
+""")
+
+
+def setup_adb_wifi(hp_ip: str, serial_usb: str = None) -> Optional[str]:
+    """
+    Setup ADB over WiFi.
+    
+    Jika serial_usb diberikan: aktifkan mode TCP via USB dulu lalu disconnect.
+    Jika tidak: langsung coba connect ke IP (Android 11+ support wireless debug).
+    
+    Returns serial WiFi "IP:PORT" atau None.
+    """
+    print(f"\n{BOLD}📶 Setup ADB via WiFi ke {hp_ip}...{RESET}")
+
+    # Android 11+ support wireless debugging langsung (port 5037 default)
+    # Android 10 kebawah butuh USB dulu untuk aktifkan TCP mode
+
+    if serial_usb:
+        # Aktifkan TCP/IP mode via USB
+        print(f"  {DIM}Mengaktifkan TCP mode via USB...{RESET}")
+        run_adb("tcpip", ADB_WIFI_PORT, device=serial_usb)
+        time.sleep(2)
+        print(f"  {G}✅ TCP mode aktif di port {ADB_WIFI_PORT}{RESET}")
+        print(f"  {Y}Sekarang bisa cabut kabel USB{RESET}")
+        time.sleep(1)
+
+    # Connect via WiFi
+    target = f"{hp_ip}:{ADB_WIFI_PORT}"
+    print(f"  Connecting ke {target}...")
+    code, out, err = run_adb("connect", target)
+
+    if "connected" in out.lower():
+        print(f"  {G}✅ Terhubung via WiFi: {target}{RESET}")
+        # Verifikasi device muncul
+        time.sleep(2)
+        devices = get_devices()
+        wifi_dev = next((d for d in devices if hp_ip in d["serial"]), None)
+        if wifi_dev:
+            return wifi_dev["serial"]
+
+    # Coba port lain (Android 11+ pakai port random)
+    print(f"  {Y}Port {ADB_WIFI_PORT} gagal, coba scan port wireless debug...{RESET}")
+    for port in [5555, 5037, 5554, 37000, 38000, 39000, 40000]:
+        target = f"{hp_ip}:{port}"
+        code, out, _ = run_adb("connect", target)
+        if "connected" in out.lower() and "refused" not in out.lower():
+            print(f"  {G}✅ Connected via port {port}!{RESET}")
+            return target
+
+    print(f"""
+  {R}❌ Gagal connect via WiFi{RESET}
+  
+  {BOLD}Cara aktifkan Wireless Debugging di HP:{RESET}
+  
+  {Y}Android 11+:{RESET}
+    Settings → Developer Options → Wireless Debugging
+    Aktifkan → tap "Pair device with QR code" atau "Pair device with pairing code"
+    
+  {Y}Android 10 ke bawah:{RESET}
+    Butuh USB dulu untuk aktifkan TCP mode:
+    1. Colok USB
+    2. Jalankan script lagi dengan --wifi {hp_ip}
+    3. Setelah setup, bisa cabut USB
+""")
+    return None
+
+
+def scan_local_network_for_android() -> list[str]:
+    """Scan jaringan lokal untuk mencari device Android dengan ADB port terbuka."""
+    print(f"\n{DIM}🔍 Scan jaringan lokal untuk Android...{RESET}")
+
+    # Ambil IP laptop
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        print(f"  {Y}Tidak bisa detect IP lokal{RESET}")
+        return []
+
+    # Ambil subnet
+    parts = local_ip.split(".")
+    subnet = ".".join(parts[:3])
+    print(f"  IP laptop: {local_ip}")
+    print(f"  Scan subnet: {subnet}.1 - {subnet}.254 port 5555...")
+
+    found = []
+    import concurrent.futures
+
+    def check_port(ip):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.3)
+            result = sock.connect_ex((ip, 5555))
+            sock.close()
+            if result == 0:
+                return ip
+        except Exception:
+            pass
+        return None
+
+    ips = [f"{subnet}.{i}" for i in range(1, 255)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=100) as ex:
+        results = list(ex.map(check_port, ips))
+
+    found = [r for r in results if r]
+    if found:
+        print(f"  {G}✅ Ditemukan {len(found)} device dengan port 5555 terbuka: {found}{RESET}")
+    else:
+        print(f"  Tidak ada device ADB WiFi ditemukan di subnet ini")
+
+    return found
+
+
 def get_devices() -> list[dict]:
-    """Ambil daftar device yang terhubung."""
+    """Ambil daftar device yang terhubung (USB + WiFi)."""
     code, out, err = run_adb("devices", "-l")
     devices = []
-    
+
     for line in out.split("\n")[1:]:  # Skip header
         line = line.strip()
         if not line or "offline" in line or "unauthorized" in line:
             continue
         parts = line.split()
         if len(parts) >= 2 and parts[1] == "device":
-            info = {"serial": parts[0], "details": " ".join(parts[2:])}
+            info = {
+                "serial":  parts[0],
+                "details": " ".join(parts[2:]),
+                "type":    "wifi" if ":" in parts[0] else "usb",
+            }
             devices.append(info)
-    
+
     return devices
-
-
-def wait_for_device() -> Optional[str]:
-    """Tunggu HP terhubung dan authorized."""
-    print(f"\n{BOLD}📱 Menunggu HP terhubung...{RESET}")
-    print(f"{DIM}  Pastikan:{RESET}")
-    print(f"  {Y}1.{RESET} USB Debugging aktif di HP")
-    print(f"     Settings → Developer Options → USB Debugging ✓")
-    print(f"  {Y}2.{RESET} Colok HP ke laptop via USB")
-    print(f"  {Y}3.{RESET} Tap 'Allow USB Debugging' di HP jika ada popup")
-    print()
-    
-    for i in range(30):  # tunggu max 30 detik
-        devices = get_devices()
-        if devices:
-            dev = devices[0]
-            print(f"{G}✅ HP terhubung: {dev['serial']} {dev['details']}{RESET}")
-            return dev['serial']
-        
-        # Cek unauthorized
-        code, out, _ = run_adb("devices")
-        if "unauthorized" in out:
-            print(f"\r{Y}⚠️  HP terdeteksi tapi belum authorize. "
-                  f"Tap 'Allow' di HP!{RESET}      ", end="", flush=True)
-        else:
-            print(f"\r{DIM}⏳ Menunggu... ({i+1}/30){RESET}      ", end="", flush=True)
-        time.sleep(1)
-    
-    print(f"\n{R}❌ Timeout — HP tidak terdeteksi{RESET}")
-    return None
 
 
 def find_sky_package(serial: str) -> Optional[str]:
@@ -574,120 +716,266 @@ def save_session(data: dict):
 def interactive_mode():
     """Mode interaktif — pilih device dan metode."""
     banner()
-    
+
     # 1. Cek ADB
     if not check_adb():
         return
-    
-    # 2. Deteksi device
-    print(f"\n{DIM}🔍 Mencari device yang terhubung...{RESET}")
+
+    # 2. Restart server dulu (fix common issues)
+    print(f"\n{DIM}🔄 Restart ADB server...{RESET}")
+    run_adb("kill-server")
+    time.sleep(1)
+    run_adb("start-server")
+
+    # 3. Deteksi device
+    print(f"\n{DIM}🔍 Mencari device...{RESET}")
     devices = get_devices()
-    
+
     serial = None
+
     if not devices:
-        print(f"{Y}⚠️  Tidak ada device terhubung.{RESET}")
-        choice = input(f"\nTunggu HP terhubung? [y/n]: ").strip().lower()
-        if choice == "y":
-            serial = wait_for_device()
-        if not serial:
-            print(f"\n{BOLD}📋 Panduan aktivasi USB Debugging:{RESET}")
-            print(f"""
-  {Y}1.{RESET} Settings → About Phone
-  {Y}2.{RESET} Tap "Build Number" 7x sampai muncul "You are a developer!"
-  {Y}3.{RESET} Settings → Developer Options → USB Debugging ✓
-  {Y}4.{RESET} Colok HP ke laptop, tap Allow di popup
-  {Y}5.{RESET} Jalankan script ini lagi
-""")
-            return
-    else:
+        # Cek unauthorized / offline
+        code, raw_out, _ = run_adb("devices")
+        if "unauthorized" in raw_out:
+            print(f"\n{Y}⚠️  HP terdeteksi tapi UNAUTHORIZED!{RESET}")
+            print(f"   → Lihat HP kamu → ada popup {BOLD}'Allow USB Debugging?'{RESET}")
+            print(f"   → Tap {BOLD}ALLOW{RESET} / {BOLD}OK{RESET}")
+            print(f"\n   Menunggu 15 detik...")
+            for i in range(15, 0, -1):
+                print(f"\r   {i}...", end="", flush=True)
+                time.sleep(1)
+            print()
+            devices = get_devices()
+
+        if not devices:
+            diagnose_adb_empty()
+            print(f"\n{BOLD}Pilih tindakan:{RESET}")
+            print(f"  {Y}1{RESET} → Coba lagi (sudah fix USB Debugging)")
+            print(f"  {Y}2{RESET} → Setup ADB via WiFi (tanpa kabel)")
+            print(f"  {Y}3{RESET} → Scan jaringan lokal untuk Android")
+            print(f"  {Y}0{RESET} → Keluar")
+
+            choice = input(f"\n{BOLD}Pilihan: {RESET}").strip()
+
+            if choice == "1":
+                devices = get_devices()
+                if not devices:
+                    print(f"{R}Masih kosong. Coba fix dulu lalu jalankan script lagi.{RESET}")
+                    return
+
+            elif choice == "2":
+                hp_ip = input(
+                    f"\nMasukkan IP HP kamu\n"
+                    f"{DIM}(cek di Settings → WiFi → tap nama WiFi → IP Address){RESET}\n"
+                    f"IP: "
+                ).strip()
+                if not hp_ip:
+                    return
+                serial = setup_adb_wifi(hp_ip)
+                if not serial:
+                    return
+
+            elif choice == "3":
+                found_ips = scan_local_network_for_android()
+                if not found_ips:
+                    print(f"{R}Tidak ada Android ditemukan.{RESET}")
+                    return
+                if len(found_ips) == 1:
+                    hp_ip = found_ips[0]
+                else:
+                    print(f"\n{BOLD}Pilih IP:{RESET}")
+                    for i, ip in enumerate(found_ips, 1):
+                        print(f"  {Y}{i}{RESET} → {ip}")
+                    idx = int(input("Nomor: ").strip()) - 1
+                    hp_ip = found_ips[idx]
+                serial = setup_adb_wifi(hp_ip)
+                if not serial:
+                    return
+            else:
+                return
+
+    # 4. Pilih device jika lebih dari 1
+    if not serial:
         if len(devices) == 1:
             serial = devices[0]["serial"]
-            print(f"{G}✅ Device: {serial} {devices[0]['details']}{RESET}")
+            dtype  = devices[0]["type"]
+            icon   = "📶" if dtype == "wifi" else "🔌"
+            print(f"{G}✅ Device: {icon} {serial} {devices[0]['details']}{RESET}")
         else:
             print(f"\n{BOLD}Pilih device:{RESET}")
-            for i, d in enumerate(devices):
-                print(f"  {Y}{i+1}{RESET} → {d['serial']} {d['details']}")
-            idx = int(input("Nomor device: ").strip()) - 1
-            serial = devices[idx]["serial"]
-    
-    # 3. Cari Sky
+            for i, d in enumerate(devices, 1):
+                icon = "📶" if d["type"] == "wifi" else "🔌"
+                print(f"  {Y}{i}{RESET} → {icon} {d['serial']} {d['details']}")
+            try:
+                idx    = int(input("Nomor device: ").strip()) - 1
+                serial = devices[idx]["serial"]
+            except (ValueError, IndexError):
+                print(f"{R}Pilihan tidak valid{RESET}")
+                return
+
+    # ── Jika punya USB, tawarkan setup WiFi sekarang ──────────────────────────
+    if ":" not in serial:  # USB device
+        print(f"\n{DIM}💡 Tip: Mau setup WiFi mode sekarang biar bisa cabut kabel? (opsional){RESET}")
+        wifi_now = input("Setup WiFi ADB? [y/n]: ").strip().lower()
+        if wifi_now == "y":
+            # Ambil IP HP otomatis
+            code, ip_out, _ = run_adb("shell", "ip", "route", device=serial)
+            ip_match = re.search(r"src\s+([\d.]+)", ip_out)
+            if ip_match:
+                hp_ip  = ip_match.group(1)
+                print(f"  {G}IP HP: {hp_ip}{RESET}")
+            else:
+                hp_ip = input("  Masukkan IP HP manual: ").strip()
+
+            wifi_serial = setup_adb_wifi(hp_ip, serial_usb=serial)
+            if wifi_serial:
+                print(f"  {G}✅ Sekarang bisa cabut kabel! WiFi ADB aktif.{RESET}")
+                use_wifi = input("  Ganti ke WiFi mode? [y/n]: ").strip().lower()
+                if use_wifi == "y":
+                    serial = wifi_serial
+
+    # 5. Cari Sky
     sky_pkg = find_sky_package(serial)
     if not sky_pkg:
         return
-    
-    # 4. Grab session
-    print(f"\n{BOLD}Metode grab session yang akan dicoba:{RESET}")
-    print(f"  {Y}1{RESET} SharedPreferences (data/data/<pkg>/shared_prefs/)")
+
+    # 6. Grab session
+    print(f"\n{BOLD}Metode grab session:{RESET}")
+    print(f"  {Y}1{RESET} SharedPreferences  {DIM}(data/data/<pkg>){RESET}")
     print(f"  {Y}2{RESET} SQLite database")
     print(f"  {Y}3{RESET} App files (JSON)")
-    print(f"  {Y}4{RESET} Logcat monitor (buka Sky → login saat monitoring)")
-    print(f"  {Y}5{RESET} Memory dump (butuh root)\n")
-    
-    result = grab_session_methods(serial, sky_pkg)
-    
+    print(f"  {Y}4{RESET} {BOLD}Logcat Monitor{RESET}     {DIM}← Paling efektif! Buka Sky & login{RESET}")
+    print(f"  {Y}5{RESET} Memory dump        {DIM}(butuh root){RESET}")
+    print(f"  {Y}A{RESET} Coba semua otomatis\n")
+
+    method_choice = input(f"{BOLD}Pilihan [1-5/A]: {RESET}").strip().upper()
+
+    result = None
+    if method_choice == "1":
+        result = _method_shared_prefs(serial, sky_pkg)
+    elif method_choice == "2":
+        result = _method_sqlite(serial, sky_pkg)
+    elif method_choice == "3":
+        result = _method_app_files(serial, sky_pkg)
+    elif method_choice == "4":
+        result = _method_logcat(serial, sky_pkg)
+    elif method_choice == "5":
+        result = _method_memory(serial, sky_pkg)
+    else:
+        result = grab_session_methods(serial, sky_pkg)
+
     if result:
         save_session(result)
     else:
         print(f"""
-{Y}⚠️  Session tidak ter-capture secara otomatis.{RESET}
+{Y}⚠️  Session tidak ter-capture otomatis.{RESET}
 
-{BOLD}Alternatif — Intercept via Proxy:{RESET}
+{BOLD}Rekomendasi selanjutnya:{RESET}
 
-  {Y}1.{RESET} Install HTTP Toolkit di laptop: {BOLD}httptoolkit.com{RESET}
-  {Y}2.{RESET} Buka HTTP Toolkit → "Android Device via ADB"
-  {Y}3.{RESET} Klik "Setup Device" → otomatis setup proxy + certificate
-  {Y}4.{RESET} Buka Sky → login
-  {Y}5.{RESET} Di HTTP Toolkit, filter {BOLD}live.radiance.thatgamecompany.com{RESET}
-  {Y}6.{RESET} Copy header {BOLD}session{RESET} dan {BOLD}user-id{RESET}
-  {Y}7.{RESET} Kirim ke bot: {BOLD}/session set <user-id> <session>{RESET}
+  {Y}A.{RESET} HTTP Toolkit (paling mudah):
+     • Download: {BOLD}httptoolkit.com{RESET}
+     • Buka → "Android Device via ADB"
+     • Klik Setup → buka Sky → login
+     • Copy header {BOLD}session{RESET} dan {BOLD}user-id{RESET}
 
-{BOLD}Atau pakai mitmproxy:{RESET}
-  python session_grabber.py --mode 1
+  {Y}B.{RESET} Coba logcat lagi (metode 4):
+     • Pastikan Sky sudah terbuka di HP
+     • Lakukan login ulang saat monitoring jalan
+
+  {Y}C.{RESET} Kirim ke bot setelah dapat:
+     {BOLD}/session set <user-id> <session>{RESET}
 """)
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(
-        description="Sky CoTL ADB Session Grabber"
+        description="Sky CoTL ADB Session Grabber",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Contoh:
+  python adb_session_grabber.py                     interaktif
+  python adb_session_grabber.py --wifi 192.168.1.5  WiFi tanpa kabel
+  python adb_session_grabber.py --serial R9JT204XXXX logcat saja
+  python adb_session_grabber.py --method logcat      logcat saja
+  python adb_session_grabber.py --scan               scan jaringan
+        """
     )
-    parser.add_argument("--serial", "-s", help="Serial device ADB spesifik")
+    parser.add_argument("--serial",  "-s", help="Serial device ADB spesifik")
+    parser.add_argument("--wifi",    "-w", metavar="IP",
+                        help="Langsung setup + gunakan ADB via WiFi ke IP HP")
+    parser.add_argument("--scan",    action="store_true",
+                        help="Scan jaringan lokal untuk Android dengan ADB port terbuka")
     parser.add_argument("--package", "-p",
                         default="com.tgc.sky.android",
-                        help="Package name Sky")
-    parser.add_argument("--method", "-m",
+                        help="Package name Sky (default: com.tgc.sky.android)")
+    parser.add_argument("--method",  "-m",
                         choices=["prefs", "sqlite", "files", "logcat", "memory", "all"],
                         default="all",
-                        help="Metode grab yang dipakai")
+                        help="Metode grab yang dipakai (default: all)")
     args = parser.parse_args()
-    
-    if args.serial:
-        # Non-interactive mode
-        if not check_adb():
+
+    if not check_adb():
+        sys.exit(1)
+
+    # ── Mode scan jaringan ────────────────────────────────────────────────────
+    if args.scan:
+        banner()
+        found = scan_local_network_for_android()
+        if found:
+            print(f"\n{BOLD}Connect ke salah satu? [y/n]:{RESET} ", end="")
+            if input().strip().lower() == "y":
+                hp_ip = found[0] if len(found) == 1 else \
+                    found[int(input("Nomor IP: ").strip()) - 1]
+                serial = setup_adb_wifi(hp_ip)
+                if serial:
+                    pkg = find_sky_package(serial)
+                    if pkg:
+                        result = grab_session_methods(serial, pkg)
+                        if result:
+                            save_session(result)
+        return
+
+    # ── Mode WiFi langsung ────────────────────────────────────────────────────
+    if args.wifi:
+        banner()
+        # Cek apakah ada USB device untuk aktifkan TCP dulu
+        devices    = get_devices()
+        usb_serial = next((d["serial"] for d in devices if ":" not in d["serial"]), None)
+        serial     = setup_adb_wifi(args.wifi, serial_usb=usb_serial)
+        if not serial:
             sys.exit(1)
-        
-        result = None
         pkg = args.package
-        
-        if args.method in ["prefs", "all"]:
-            result = _method_shared_prefs(args.serial, pkg)
-        if not result and args.method in ["sqlite", "all"]:
-            result = _method_sqlite(args.serial, pkg)
-        if not result and args.method in ["files", "all"]:
-            result = _method_app_files(args.serial, pkg)
-        if not result and args.method in ["logcat", "all"]:
-            result = _method_logcat(args.serial, pkg)
-        if not result and args.method in ["memory", "all"]:
-            result = _method_memory(args.serial, pkg)
-        
+        if not find_sky_package(serial):
+            sys.exit(1)
+        result = None
+        if args.method in ["prefs",   "all"]: result = _method_shared_prefs(serial, pkg)
+        if not result and args.method in ["sqlite",  "all"]: result = _method_sqlite(serial, pkg)
+        if not result and args.method in ["files",   "all"]: result = _method_app_files(serial, pkg)
+        if not result and args.method in ["logcat",  "all"]: result = _method_logcat(serial, pkg)
+        if not result and args.method in ["memory",  "all"]: result = _method_memory(serial, pkg)
         if result:
             save_session(result)
             sys.exit(0)
-        else:
-            print(f"{R}Session tidak ter-capture{RESET}")
-            sys.exit(1)
-    else:
-        interactive_mode()
+        sys.exit(1)
+
+    # ── Mode serial spesifik ──────────────────────────────────────────────────
+    if args.serial:
+        pkg    = args.package
+        serial = args.serial
+        result = None
+        if args.method in ["prefs",   "all"]: result = _method_shared_prefs(serial, pkg)
+        if not result and args.method in ["sqlite",  "all"]: result = _method_sqlite(serial, pkg)
+        if not result and args.method in ["files",   "all"]: result = _method_app_files(serial, pkg)
+        if not result and args.method in ["logcat",  "all"]: result = _method_logcat(serial, pkg)
+        if not result and args.method in ["memory",  "all"]: result = _method_memory(serial, pkg)
+        if result:
+            save_session(result)
+            sys.exit(0)
+        sys.exit(1)
+
+    # ── Mode interaktif (default) ─────────────────────────────────────────────
+    interactive_mode()
 
 
 if __name__ == "__main__":
