@@ -5,6 +5,7 @@ pyjwt==2.8.0
 python-dotenv==1.0.0
 aiohttp==3.9.1
 nest-asyncio==1.5.8
+msgpack==1.0.7          # Sky API v0.28+ protocol (WAJIB)
 
 # UI automation (butuh display/game)
 pyautogui==0.9.54
