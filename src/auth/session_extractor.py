@@ -131,24 +131,13 @@ class SkySessionExtractor:
             "X-Unity-Version": "2021.3.16f1",
         }
 
-        # ── Attempts: dari paling lengkap ke minimal ──────────────────────────
+        # ── Attempts: semua kemungkinan endpoint + payload ───────────────────────
+        # CATATAN: /account/create_session dan /account/signin → 404 (endpoint lama)
+        # Sky sudah migrasi endpoint. Coba semua variasi yang mungkin.
         attempts = [
-            # 1. Payload paling lengkap: device fingerprint penuh
-            (base_headers, "/account/create_session", {
-                "type":         "facebook",
-                "token":        jwt_token,
-                "id":           sky_id or fb_id,
-                "device_id":    dev_id,
-                "install_id":   inst_id,
-                "android_id":   and_id,
-                "game_version": 308028,
-                "platform":     "android",
-                "brand":        device["brand"],
-                "model":        device["model"],
-                "os_version":   device["android"],
-            }),
-            # 2. device_id + install_id saja
-            (base_headers, "/account/create_session", {
+            # ── Endpoint baru yang kemungkinan dipakai Sky v0.28+ ────────────
+            # 1. /v1/account/session (REST versioned)
+            (base_headers, "/v1/account/session", {
                 "type":         "facebook",
                 "token":        jwt_token,
                 "id":           sky_id or fb_id,
@@ -157,37 +146,63 @@ class SkySessionExtractor:
                 "game_version": 308028,
                 "platform":     "android",
             }),
-            # 3. device_id saja
-            (base_headers, "/account/create_session", {
+            # 2. /v2/account/session
+            (base_headers, "/v2/account/session", {
                 "type":         "facebook",
                 "token":        jwt_token,
+                "id":           sky_id or fb_id,
                 "device_id":    dev_id,
-                "game_version": 280,
+                "game_version": 308028,
+            }),
+            # 3. /account/session (tanpa create_)
+            (base_headers, "/account/session", {
+                "type":         "facebook",
+                "token":        jwt_token,
+                "id":           sky_id or fb_id,
+                "device_id":    dev_id,
+                "game_version": 308028,
                 "platform":     "android",
             }),
-            # 4. sky_id + game_version (cara FengWu)
+            # 4. /account/login
+            (base_headers, "/account/login", {
+                "type":         "facebook",
+                "token":        jwt_token,
+                "id":           sky_id or fb_id,
+                "device_id":    dev_id,
+                "game_version": 308028,
+            }),
+            # 5. /v1/auth/session
+            (base_headers, "/v1/auth/session", {
+                "type":   "facebook",
+                "token":  jwt_token,
+                "id":     sky_id or fb_id,
+            }),
+            # 6. /auth/facebook
+            (base_headers, "/auth/facebook", {
+                "token":        jwt_token,
+                "id":           sky_id or fb_id,
+                "device_id":    dev_id,
+                "game_version": 308028,
+            }),
+            # 7. /v1/auth/login
+            (base_headers, "/v1/auth/login", {
+                "type":   "facebook",
+                "token":  jwt_token,
+            }),
+            # 8. /auth/login
+            (base_headers, "/auth/login", {
+                "type":   "facebook",
+                "token":  jwt_token,
+                "device_id": dev_id,
+            }),
+            # 9. /account/create_session (endpoint lama — sudah 404 tapi tetap coba)
             (base_headers, "/account/create_session", {
                 "type":         "facebook",
                 "token":        jwt_token,
                 "id":           sky_id or fb_id,
-                "game_version": 280,
-            }),
-            # 5. Minimal — hanya token
-            (base_headers, "/account/create_session", {
-                "type":  "facebook",
-                "token": jwt_token,
-            }),
-            # 6. access_token key
-            (base_headers, "/account/create_session", {
-                "type":         "facebook",
-                "access_token": jwt_token,
                 "device_id":    dev_id,
-            }),
-            # 7. Endpoint signin alternatif
-            (base_headers, "/account/signin", {
-                "auth_token": jwt_token,
-                "auth_type":  "facebook",
-                "device_id":  dev_id,
+                "game_version": 308028,
+                "platform":     "android",
             }),
         ]
 
@@ -236,8 +251,8 @@ class SkySessionExtractor:
 
     def debug_raw(self, jwt_token: str, sky_id: Optional[str] = None) -> dict:
         """
-        Kirim request ke create_session dan return response mentah.
-        Dipakai untuk debug — lihat apa yang server Sky kembalikan.
+        Kirim request ke semua endpoint kandidat dan return response mentah.
+        Dipakai untuk debug — lihat mana yang tidak 404.
         """
         jwt_info = self._decode_jwt(jwt_token)
         fb_id  = jwt_info.get("sub", "")
@@ -265,20 +280,39 @@ class SkySessionExtractor:
             "game_version": 308028,
             "platform":     "android",
         }
+
+        # Test semua endpoint — cari yang tidak 404
+        endpoints = [
+            "/account/session",
+            "/account/create_session",
+            "/account/login",
+            "/account/signin",
+            "/v1/account/session",
+            "/v2/account/session",
+            "/v1/auth/session",
+            "/v1/auth/login",
+            "/auth/facebook",
+            "/auth/login",
+        ]
+
         results = []
-        for endpoint in ["/account/create_session", "/account/signin"]:
+        for endpoint in endpoints:
             try:
                 resp = requests.post(
                     f"{API_BASE}{endpoint}",
-                    json=payload, headers=headers, timeout=15
+                    json=payload, headers=headers, timeout=10
                 )
                 results.append({
                     "endpoint": endpoint,
                     "status":   resp.status_code,
-                    "body":     resp.text[:400],
+                    "body":     resp.text[:200],
                 })
+                # Stop di endpoint pertama yang bukan 404
+                if resp.status_code != 404:
+                    results[-1]["note"] = "⬅️ BUKAN 404! Ini endpoint yang benar"
             except Exception as e:
                 results.append({"endpoint": endpoint, "error": str(e)})
+
         return {"results": results, "device_id": dev_id, "fb_id": fb_id}
 
     def _decode_jwt(self, token: str) -> dict:
