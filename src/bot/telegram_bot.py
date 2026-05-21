@@ -269,13 +269,42 @@ class SkyAutoBot:
         if not self.tokens.get_token(str(uid)):
             await u.message.reply_text("❌ Login dulu! /login"); return
         await u.message.reply_text("⏳ Mengambil data akun...")
+
         api = await self._get_api_client(uid)
+
+        # Debug: tampilkan state session ke user
+        if not api:
+            await u.message.reply_text("❌ Gagal buat API client — tidak ada token."); return
+
+        session_ok = bool(api.session_id and api.user_id)
+        logger.info(f"[account] uid={uid} user_id={api.user_id} session={api.session_id}")
+
+        if not session_ok:
+            await u.message.reply_text(
+                "⚠️ <b>Session belum terbaca!</b>\n\n"
+                f"user_id: <code>{api.user_id or '(kosong)'}</code>\n"
+                f"session: <code>{api.session_id or '(kosong)'}</code>\n\n"
+                "Coba:\n<code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>",
+                parse_mode='HTML'
+            ); return
+
         try:
-            data = api.get_account_info() if api else None
+            data = api.get_account_info()
             if not data:
-                data = get_mock_account_info()
-        except Exception:
-            data = get_mock_account_info()
+                logger.warning(f"[account] get_account_info() return None — session mungkin expired/rejected")
+                await u.message.reply_text(
+                    "⚠️ <b>Server Sky menolak request.</b>\n\n"
+                    f"user_id: <code>{api.user_id}</code>\n"
+                    f"session: <code>{api.session_id[:16]}...</code>\n\n"
+                    "Kemungkinan session sudah expired.\n"
+                    "Intercept ulang dari game dan kirim:\n"
+                    "<code>/session set &lt;user_id&gt; &lt;session_id&gt;</code>",
+                    parse_mode='HTML'
+                ); return
+        except Exception as e:
+            logger.error(f"[account] Exception: {e}", exc_info=True)
+            await u.message.reply_text(f"❌ Error: <code>{e}</code>", parse_mode='HTML'); return
+
         note = "" if data.get("_real") else "\n\n⚠️ <i>Demo data – butuh session aktif</i>"
         await u.message.reply_text(format_account_info(data) + note, parse_mode='HTML')
 
