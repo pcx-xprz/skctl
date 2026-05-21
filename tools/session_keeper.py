@@ -114,12 +114,50 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def auto_set_session(bot_token: str, chat_id: str, user_id: str, session: str) -> bool:
-    """Kirim /session set ke bot."""
-    msg = f"/session set {user_id} {session}"
-    ok  = send_telegram(bot_token, chat_id, msg)
-    if ok:
-        print(f"{G}✅ Session dikirim ke bot!{RESET}")
+def update_sessions_json(user_id: str, session: str) -> bool:
+    """
+    Langsung update sessions.json — tidak perlu kirim ke bot.
+    Ini cara yang benar karena bot tidak bisa proses pesan dari dirinya sendiri.
+    """
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sessions_path = os.path.join(here, "data", "sessions.json")
+    try:
+        os.makedirs(os.path.dirname(sessions_path), exist_ok=True)
+        # Load existing
+        data = {}
+        if os.path.exists(sessions_path):
+            with open(sessions_path) as f:
+                data = json.load(f)
+        # Update semua entry yang punya user_id yang sama
+        updated = False
+        for tg_uid, info in data.items():
+            if info.get("user_id") == user_id:
+                info["session"] = session
+                updated = True
+                print(f"{G}✅ sessions.json diupdate untuk tg_uid={tg_uid}{RESET}")
+        if not updated:
+            # Tidak ada entry yang cocok, skip
+            print(f"{Y}⚠️  user_id {user_id[:8]}... tidak ditemukan di sessions.json{RESET}")
+            return False
+        with open(sessions_path, "w") as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"{R}Error update sessions.json: {e}{RESET}")
+        return False
+
+
+def notify_telegram(bot_token: str, chat_id: str, user_id: str, session: str) -> bool:
+    """Kirim notifikasi ke user (BUKAN command ke bot — hanya info)."""
+    if not bot_token or not chat_id:
+        return False
+    msg = (
+        f"🔄 <b>Session auto-updated!</b>\n\n"
+        f"🆔 user_id: <code>{user_id}</code>\n"
+        f"🔑 session: <code>{session[:16]}...</code>\n\n"
+        f"✅ sessions.json sudah diupdate langsung."
+    )
+    ok = send_telegram(bot_token, chat_id, msg)
     return ok
 
 
@@ -274,28 +312,32 @@ def monitor_logcat(serial: str, bot_token: str, chat_id: str):
                     print(f"  user_id : {new_user_id}")
                     print(f"  session : {new_session[:20]}...")
 
-                    if bot_token and chat_id:
-                        print(f"\n  {DIM}Mengirim ke bot...{RESET}")
-                        ok = auto_set_session(bot_token, chat_id, new_user_id, new_session)
-                        if ok:
-                            print(f"  {G}✅ Bot sudah update! Coba /account di Telegram.{RESET}\n")
-                        else:
-                            print(f"  {Y}⚠️  Gagal kirim ke bot. Set manual:{RESET}")
-                            print(f"  /session set {new_user_id} {new_session}\n")
+                    # 1. Langsung update sessions.json (cara yang benar)
+                    print(f"\n  {DIM}Update sessions.json langsung...{RESET}")
+                    file_ok = update_sessions_json(new_user_id, new_session)
+                    if file_ok:
+                        print(f"  {G}✅ sessions.json updated! Bot akan pakai session baru.{RESET}")
                     else:
-                        print(f"\n  {Y}Kirim manual ke bot:{RESET}")
+                        print(f"  {Y}⚠️  Gagal update file. Set manual di bot:{RESET}")
+                        print(f"  /session set {new_user_id} {new_session}\n")
+
+                    # 2. Kirim notifikasi ke user (bukan command ke bot)
+                    if bot_token and chat_id:
+                        notify_telegram(bot_token, chat_id, new_user_id, new_session)
+                        print(f"  {G}✅ Notifikasi terkirim ke Telegram kamu.{RESET}\n")
+                    else:
+                        print(f"\n  {Y}Set manual di bot jika file update gagal:{RESET}")
                         print(f"  {BOLD}/session set {new_user_id} {new_session}{RESET}\n")
 
             elif recent_sessions and not effective_user_id:
-                # Punya session tapi tidak punya user_id
                 new_session = recent_sessions[-1]
                 if new_session != last_session:
                     last_session = new_session
-                    print(f"\n{Y}⚠️  Session ter-capture tapi user_id belum ada!{RESET}")
+                    print(f"\n{Y}⚠️  Session ter-capture tapi user_id belum ada di sessions.json!{RESET}")
                     print(f"  session : {new_session}")
-                    print(f"  {Y}Set user_id dulu di bot:{RESET}")
+                    print(f"  {Y}Set sekali di bot Telegram:{RESET}")
                     print(f"  /session set <user_id_kamu> {new_session}")
-                    print(f"  {DIM}(user_id adalah UUID dari logcat sebelumnya){RESET}\n")
+                    print(f"  {DIM}Setelah itu session_keeper akan auto-update selanjutnya.{RESET}\n")
 
     except KeyboardInterrupt:
         print(f"\n{Y}Stopped.{RESET}")
