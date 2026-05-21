@@ -144,15 +144,36 @@ class SkyAPIClient:
             try:
                 resp = self.http.post(url, data=body, headers=headers, timeout=15)
 
+                # LOG DETAIL — selalu tampilkan status + raw response untuk debug
+                logger.info(
+                    f"POST {path} → HTTP {resp.status_code} "
+                    f"| body_sent={len(body)}B "
+                    f"| resp_len={len(resp.content)}B "
+                    f"| Content-Type={resp.headers.get('Content-Type','?')}"
+                )
+                if resp.status_code not in (200, 201) or logger.isEnabledFor(logging.DEBUG):
+                    raw_preview = resp.content[:200]
+                    try:
+                        raw_preview = raw_preview.decode("utf-8", errors="replace")
+                    except Exception:
+                        raw_preview = repr(raw_preview)
+                    logger.warning(f"  raw response: {raw_preview}")
+
                 if resp.status_code == 401:
-                    logger.warning("Session expired (401)")
+                    logger.warning(f"401 dari {path} — session expired atau tidak valid")
                     return None
                 if resp.status_code == 418:
                     logger.warning(
-                        f"418 dari {path} — kemungkinan session tidak valid "
-                        f"atau format request salah. "
-                        f"{'msgpack aktif' if MSGPACK_AVAILABLE else 'msgpack tidak terinstall!'}"
+                        f"418 dari {path} — server reject. "
+                        f"msgpack={'aktif' if MSGPACK_AVAILABLE else 'TIDAK TERINSTALL!'} "
+                        f"user_id={self.user_id} session={self.session_id[:8] if self.session_id else 'None'}..."
                     )
+                    return None
+                if resp.status_code == 403:
+                    logger.warning(f"403 dari {path} — akses ditolak")
+                    return None
+                if resp.status_code >= 400:
+                    logger.warning(f"HTTP {resp.status_code} dari {path}")
                     return None
 
                 result = self._decode_response(resp)
