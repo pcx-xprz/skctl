@@ -102,35 +102,40 @@ class SkySessionExtractor:
 
     def extract_from_jwt(self, jwt_token: str, sky_id: Optional[str] = None) -> Optional[Dict]:
         """
-        PENTING — HASIL REVERSE ENGINEERING (21 Mei 2026):
-        =====================================================
-        Endpoint lama /account/create_session sudah DIHAPUS (404).
-        Flow auth Sky sekarang HANYA via OAuth redirect:
+        HASIL REVERSE ENGINEERING FINAL (21 Mei 2026):
+        ================================================
 
-        1. User buka di browser:
-           GET /account/auth/oauth_signin?type=Facebook&token=
-           → Redirect ke Facebook OAuth
+        Endpoint yang ADA di live.radiance.thatgamecompany.com:
+        ┌──────────────────────────────────────┬────────┬──────────────────────────────────────┐
+        │ Endpoint                             │ Status │ Keterangan                           │
+        ├──────────────────────────────────────┼────────┼──────────────────────────────────────┤
+        │ GET /account/auth/oauth_signin       │  200   │ Redirect ke Facebook OAuth           │
+        │ GET /account/auth/oauth_redirect     │  200   │ Exchange FB code → {id,alias,token}  │
+        │ POST /account/get_currency           │  418   │ ADA, butuh session valid di body     │
+        │ POST /account/auth/login             │  418   │ ADA, tapi butuh input dari game      │
+        └──────────────────────────────────────┴────────┴──────────────────────────────────────┘
 
-        2. Setelah login Facebook, FB redirect ke:
-           GET /account/auth/oauth_redirect?code=FB_CODE&state=Facebook~...
-           → Sky server exchange FB code → return JSON {id, alias, token}
-           → token = FB JWT yang bisa dipakai untuk game session
+        MENGAPA 418 TIDAK BISA DIPECAHKAN:
+        - 418 di Sky = "request diterima server, tapi data tidak valid"
+        - /account/auth/login → 418 apapun yang dikirim (JSON, msgpack, protobuf,
+          header auth, body kosong) → selalu 418 body kosong
+        - Ini berarti endpoint butuh SESUATU yang hanya ada di game client asli
+          (kemungkinan: device certificate, signed payload, atau session yang
+          sudah dibuat sebelumnya lewat native game install)
 
-        3. TIDAK ADA endpoint create_session yang bisa dipanggil dari luar!
-           Sky hanya accept session yang dibuat lewat flow OAuth browser.
+        KESIMPULAN:
+        Session Sky TIDAK BISA dibuat dari luar game client.
+        Satu-satunya cara mendapatkan session adalah:
+        1. Login di game Sky asli di HP
+        2. Intercept traffic via HTTP Toolkit/mitmproxy
+        3. Copy header 'session' dan 'user-id' dari request game ke Sky server
+        4. Pakai /session set <user_id> <session_id> di bot
 
-        Endpoint yang terbukti ADA (non-404):
-        - GET  /account/auth/oauth_signin  → 200 (redirect ke FB)
-        - GET  /account/auth/oauth_redirect → 200 (exchange code, return session)
-        - POST /account/get_currency        → 418 (ada, butuh session valid)
-        - POST /account/auth/login          → 418 (ada, tapi belum tahu format)
-
-        Kesimpulan: Tidak bisa auto-create session dari JWT token saja.
-        Harus lewat flow OAuth browser lengkap.
+        Method ini selalu return None karena semua endpoint sudah 404 atau 418.
         """
         jwt_info = self._decode_jwt(jwt_token)
         logger.info(f"JWT: name={jwt_info.get('name','?')}, sub={jwt_info.get('sub','?')}")
-        logger.warning("⚠️ Semua endpoint create_session sudah 404. Flow auth harus lewat browser OAuth.")
+        logger.warning("⚠️ RE Final: session hanya bisa didapat dari game client asli via HTTP Toolkit.")
         return None
 
     def _try_endpoint(self, endpoint: str, payload: dict, headers: dict) -> Optional[Dict]:
