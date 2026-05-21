@@ -27,6 +27,15 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Log warning saat module di-import jika msgpack tidak ada
+if not MSGPACK_AVAILABLE:
+    import logging as _logging
+    _logging.getLogger(__name__).critical(
+        "⚠️  MSGPACK TIDAK TERINSTALL! "
+        "Sky API v0.28+ butuh msgpack untuk komunikasi dengan server. "
+        "Jalankan: pip install msgpack==1.0.7"
+    )
+
 API_HOST   = "live.radiance.thatgamecompany.com"
 API_BASE   = f"https://{API_HOST}"
 # User-Agent harus cocok dengan versi game yang dipakai user (v0.33.2)
